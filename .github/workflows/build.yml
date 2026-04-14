@@ -1,0 +1,31 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show Swift version
+        run: swift --version
+
+      - name: Run tests
+        run: swift test
+
+      - name: Build (current arch)
+        run: make build
+
+      - name: Build universal binary
+        run: make universal
+
+      - name: Verify app bundle
+        run: |
+          ls -la build/aimeter.app/Contents/MacOS/aimeter
+          file build/aimeter.app/Contents/MacOS/aimeter
+          codesign -dvv build/aimeter.app

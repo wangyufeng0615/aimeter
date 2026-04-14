@@ -1,0 +1,518 @@
+import SwiftUI
+
+final class UsageStore: ObservableObject {
+    typealias Clock = () -> Date
+    typealias RateReader = () -> RateLimit?
+    typealias CodexEntriesReader = (Date) -> [CodexReader.UsageEntry]?
+    typealias PricingLoader = () -> Void
+
+    struct TokenLoadStats: Equatable {
+        var scannedFiles = 0
+        var fullParsedFiles = 0
+        var incrementalFiles = 0
+        var reusedFiles = 0
+        var parsedBytes = 0
+
+        static let zero = TokenLoadStats()
+    }
+
+    private struct CollectionSignature: Equatable {
+        let count: Int
+        let hash: Int
+
+        static let empty = CollectionSignature(count: 0, hash: 0)
+    }
+
+    private struct CachedFile {
+        let mod: Date
+        let size: Int
+        let fileID: UInt64?
+        let lineCount: Int
+        let trailingData: Data
+        let entries: [UsageEntry]
+    }
+
+    private struct ParsedChunk {
+        let entries: [UsageEntry]
+        let lineCount: Int
+        let trailingData: Data
+        let bytesRead: Int
+    }
+
+    private struct ClaudeLoadResult {
+        let entries: [UsageEntry]
+        let signature: CollectionSignature
+        let cache: [String: CachedFile]
+        let stats: TokenLoadStats
+    }
+
+    private struct TokenLoadResult {
+        let ccEntries: [UsageEntry]
+        let ccSignature: CollectionSignature
+        let cxEntries: [CodexReader.UsageEntry]?
+        let cxSignature: CollectionSignature?
+        let cache: [String: CachedFile]
+        let stats: TokenLoadStats
+    }
+
+    // Server-provided rate limits
+    @Published var claudeRate: RateLimit?
+    @Published var codexRate: RateLimit?
+    @Published var claudeRateStatus: ClaudeRateStatus = .waitingForSessionData
+
+    // Local token data for detail views
+    @Published var ccEntries: [UsageEntry] = []
+    @Published var cxEntries: [CodexReader.UsageEntry] = []
+    @Published var isLoading = true
+
+    private var timer: Timer?
+    private let projectsDir: URL
+    private let now: Clock
+    private let claudeRateReader: RateReader
+    private let claudeRateStatusReader: () -> ClaudeRateStatus
+    private let codexRateReader: RateReader
+    private let codexEntriesReader: CodexEntriesReader
+    private let pricingLoader: PricingLoader
+
+    // File cache lives on the main thread; captured into Stage 2 by value,
+    // written back on main when Stage 2 completes. `stage2InFlight` prevents
+    // overlapping loads that would race on the cache.
+    private var fileCache: [String: CachedFile] = [:]
+    private var stage2InFlight = false
+    private var ccSignature = CollectionSignature.empty
+    private var cxSignature = CollectionSignature.empty
+
+    private(set) var lastTokenLoadStats: TokenLoadStats = .zero
+
+    private static let isoFull: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+    private static let isoBasic: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime]
+        return f
+    }()
+
+    init(
+        projectsDir: URL = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".claude/projects"),
+        autoload: Bool = true,
+        autoRefresh: Bool = true,
+        refreshInterval: TimeInterval = 15,
+        now: @escaping Clock = Date.init,
+        claudeRateReader: @escaping RateReader = ClaudeRateReader.read,
+        claudeRateStatusReader: @escaping () -> ClaudeRateStatus = ClaudeRateReader.status,
+        codexRateReader: @escaping RateReader = CodexRateReader.read,
+        codexEntriesReader: @escaping CodexEntriesReader = CodexReader.readEntries,
+        pricingLoader: @escaping PricingLoader = Pricing.loadFromLiteLLM
+    ) {
+        self.projectsDir = projectsDir
+        self.now = now
+        self.claudeRateReader = claudeRateReader
+        self.claudeRateStatusReader = claudeRateStatusReader
+        self.codexRateReader = codexRateReader
+        self.codexEntriesReader = codexEntriesReader
+        self.pricingLoader = pricingLoader
+
+        if autoload {
+            loadAsync()
+        }
+        if autoRefresh {
+            timer = Timer.scheduledTimer(withTimeInterval: refreshInterval, repeats: true) { [weak self] _ in
+                self?.loadAsync()
+            }
+        }
+    }
+
+    deinit { timer?.invalidate() }
+
+    // MARK: - Installed detection
+
+    static let claudeInstalled = FileManager.default.fileExists(
+        atPath: FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude").path)
+    static let codexInstalled = FileManager.default.fileExists(
+        atPath: FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex").path)
+
+    // MARK: - Menu bar
+
+    var claudePct: Double { claudeRate?.fiveHourPct ?? 0 }
+    var codexPct: Double { codexRate?.fiveHourPct ?? 0 }
+    var showCodex: Bool { Self.codexInstalled && (codexRate != nil || !cxEntries.isEmpty) }
+
+    /// Single-provider fallback text (used when only one is installed)
+    var menuBarText: String {
+        if Self.claudeInstalled { return "Claude \(Int(claudePct))%" }
+        if Self.codexInstalled  { return "Codex \(Int(codexPct))%" }
+        return "—"
+    }
+
+    // MARK: - Claude detail data
+
+    var ccToday: DailyUsage {
+        let today = Calendar.current.startOfDay(for: now())
+        return DailyUsage(id: "today", date: today, entries: ccEntries.filter { $0.timestamp >= today })
+    }
+
+    var ccWeekly: [DailyUsage] {
+        let cal = Calendar.current
+        let today = cal.startOfDay(for: now())
+        let df = DateFormatter(); df.dateFormat = "yyyy-MM-dd"
+        return (0..<7).reversed().map { ago in
+            let d = cal.date(byAdding: .day, value: -ago, to: today)!
+            let n = cal.date(byAdding: .day, value: 1, to: d)!
+            return DailyUsage(id: df.string(from: d), date: d,
+                              entries: ccEntries.filter { $0.timestamp >= d && $0.timestamp < n })
+        }
+    }
+
+    var ccModels: [ModelUsage] {
+        let today = Calendar.current.startOfDay(for: now())
+        let todayEntries = ccEntries.filter { $0.timestamp >= today }
+        // Group by the FULL model name so distinct snapshots stay separate
+        let grouped = Dictionary(grouping: todayEntries) { $0.model }
+        return grouped.map { ModelUsage(id: $0.key, model: $0.key, entries: $0.value) }
+            .sorted { $0.totalTokens > $1.totalTokens }
+    }
+
+    // MARK: - Codex detail data
+
+    var cxModels: [(model: String, tokens: Int, cost: Double)] {
+        let today = Calendar.current.startOfDay(for: now())
+        let todayEntries = cxEntries.filter { $0.timestamp >= today }
+        let grouped = Dictionary(grouping: todayEntries) { CodexReader.shortenModel($0.model) }
+        return grouped.map {
+            (
+                $0.key,
+                $0.value.reduce(0) { $0 + $1.totalTokens },
+                $0.value.reduce(0.0) { $0 + $1.cost }
+            )
+        }
+        .sorted { $0.1 > $1.1 }
+    }
+
+    // MARK: - Combined weekly (Claude + Codex)
+
+    struct WeeklyDay: Identifiable {
+        let id: String
+        let date: Date
+        let tokens: Int
+        let cost: Double
+    }
+
+    var weekly: [WeeklyDay] {
+        let cal = Calendar.current
+        let today = cal.startOfDay(for: now())
+        let df = DateFormatter(); df.dateFormat = "yyyy-MM-dd"
+        return (0..<7).reversed().map { ago in
+            let d = cal.date(byAdding: .day, value: -ago, to: today)!
+            let n = cal.date(byAdding: .day, value: 1, to: d)!
+
+            let ccDay = ccEntries.filter { $0.timestamp >= d && $0.timestamp < n }
+            let cxDay = cxEntries.filter { $0.timestamp >= d && $0.timestamp < n }
+
+            let tokens = ccDay.reduce(0) { $0 + $1.totalTokens }
+                       + cxDay.reduce(0) { $0 + $1.totalTokens }
+            let cost = ccDay.reduce(0.0) { $0 + $1.cost }
+                     + cxDay.reduce(0.0) { $0 + $1.cost }
+
+            return WeeklyDay(id: df.string(from: d), date: d, tokens: tokens, cost: cost)
+        }
+    }
+
+    // MARK: - Loading
+
+    func refresh() { loadAsync() }
+
+    func refreshSynchronouslyForTesting() {
+        let rates = loadRateLimits()
+        applyRateLimits(claude: rates.claude, claudeStatus: rates.claudeStatus, codex: rates.codex)
+        let result = loadTokenData(snapshot: fileCache)
+        applyTokenData(result)
+    }
+
+    private func loadAsync() {
+        // Stage 1: Rate limits — fast, show immediately
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+            let rates = self.loadRateLimits()
+            DispatchQueue.main.async {
+                self.applyRateLimits(claude: rates.claude, claudeStatus: rates.claudeStatus, codex: rates.codex)
+            }
+        }
+
+        // Stage 2: Token data — slow, with race-guard
+        guard !stage2InFlight else { return }
+        stage2InFlight = true
+        let snapshot = self.fileCache  // capture on main thread
+
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self else { return }
+            let result = self.loadTokenData(snapshot: snapshot)
+            DispatchQueue.main.async {
+                self.applyTokenData(result)
+                self.stage2InFlight = false
+            }
+        }
+    }
+
+    private func loadRateLimits() -> (claude: RateLimit?, claudeStatus: ClaudeRateStatus, codex: RateLimit?) {
+        (claudeRateReader(), claudeRateStatusReader(), codexRateReader())
+    }
+
+    private func applyRateLimits(claude: RateLimit?, claudeStatus: ClaudeRateStatus, codex: RateLimit?) {
+        if let claude {
+            if claudeRate != claude {
+                claudeRate = claude
+            }
+        } else if let existing = claudeRate,
+                  existing.updatedAt.timeIntervalSinceNow > -6 * 3600,
+                  claudeStatus != .available {
+            // Keep the last good Claude limit snapshot across transient empty statusline payloads.
+        } else if claudeRate != nil {
+            claudeRate = nil
+        }
+        if self.claudeRateStatus != claudeStatus {
+            self.claudeRateStatus = claudeStatus
+        }
+        if codexRate != codex {
+            codexRate = codex
+        }
+    }
+
+    private func loadTokenData(snapshot: [String: CachedFile]) -> TokenLoadResult {
+        pricingLoader()
+
+        var cache = snapshot
+        let claude = loadClaudeEntries(cache: &cache)
+        let cutoff = now().addingTimeInterval(-7 * 86400)
+        let codexEntries = codexEntriesReader(cutoff)
+
+        return TokenLoadResult(
+            ccEntries: claude.entries,
+            ccSignature: claude.signature,
+            cxEntries: codexEntries,
+            cxSignature: codexEntries.map(collectionSignature),
+            cache: cache,
+            stats: claude.stats
+        )
+    }
+
+    private func applyTokenData(_ result: TokenLoadResult) {
+        fileCache = result.cache
+        lastTokenLoadStats = result.stats
+
+        if result.ccSignature != ccSignature {
+            ccEntries = result.ccEntries
+            ccSignature = result.ccSignature
+        }
+        if let cxEntries = result.cxEntries,
+           let cxSignature = result.cxSignature,
+           cxSignature != self.cxSignature {
+            self.cxEntries = cxEntries
+            self.cxSignature = cxSignature
+        }
+        if isLoading {
+            isLoading = false
+        }
+    }
+
+    private func collectionSignature<T: Hashable>(_ values: [T]) -> CollectionSignature {
+        var hasher = Hasher()
+        hasher.combine(values.count)
+        for value in values {
+            hasher.combine(value)
+        }
+        return CollectionSignature(count: values.count, hash: hasher.finalize())
+    }
+
+    // MARK: - Claude JSONL parsing
+
+    private func loadClaudeEntries(cache: inout [String: CachedFile]) -> ClaudeLoadResult {
+        let cutoff = now().addingTimeInterval(-7 * 86400)
+        var all: [UsageEntry] = []
+        var seen = Set<String>()
+        var newCache: [String: CachedFile] = [:]
+        var stats = TokenLoadStats.zero
+
+        guard let enumerator = FileManager.default.enumerator(
+            at: projectsDir, includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            cache = [:]
+            return ClaudeLoadResult(entries: [], signature: .empty, cache: [:], stats: stats)
+        }
+
+        while let url = enumerator.nextObject() as? URL {
+            guard url.pathExtension == "jsonl" else { continue }
+            guard let vals = try? url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey]),
+                  let mod = vals.contentModificationDate,
+                  let size = vals.fileSize,
+                  mod >= cutoff else { continue }
+
+            stats.scannedFiles += 1
+            let path = url.path
+            let fileID = fileID(for: url)
+            let fileEntries: [UsageEntry]
+
+            if let cached = cache[path],
+               cached.mod == mod,
+               cached.size == size,
+               cached.fileID == fileID {
+                stats.reusedFiles += 1
+                newCache[path] = cached
+                fileEntries = cached.entries
+            } else if let cached = cache[path],
+                      cached.fileID != nil,
+                      cached.fileID == fileID,
+                      size >= cached.size {
+                let parsed = parseAppendedFile(url, fromOffset: cached.size, cached: cached)
+                let mergedEntries = cached.entries + parsed.entries
+                let updated = CachedFile(
+                    mod: mod,
+                    size: size,
+                    fileID: fileID,
+                    lineCount: parsed.lineCount,
+                    trailingData: parsed.trailingData,
+                    entries: mergedEntries
+                )
+                stats.incrementalFiles += 1
+                stats.parsedBytes += parsed.bytesRead
+                newCache[path] = updated
+                fileEntries = mergedEntries
+            } else {
+                let parsed = parseWholeFile(url)
+                let rebuilt = CachedFile(
+                    mod: mod,
+                    size: size,
+                    fileID: fileID,
+                    lineCount: parsed.lineCount,
+                    trailingData: parsed.trailingData,
+                    entries: parsed.entries
+                )
+                stats.fullParsedFiles += 1
+                stats.parsedBytes += parsed.bytesRead
+                newCache[path] = rebuilt
+                fileEntries = parsed.entries
+            }
+
+            for entry in fileEntries where seen.insert(entry.id).inserted {
+                all.append(entry)
+            }
+        }
+
+        cache = newCache
+        let sorted = all.sorted { $0.timestamp < $1.timestamp }
+        return ClaudeLoadResult(entries: sorted,
+                                signature: collectionSignature(sorted),
+                                cache: newCache,
+                                stats: stats)
+    }
+
+    private static let maxFileBytes: Int = 64 * 1024 * 1024  // 64MB hard cap per file
+    private static let maxLinesPerFile = 200_000
+
+    private func parseWholeFile(_ url: URL) -> ParsedChunk {
+        readFile(url, fromOffset: 0, carryover: Data(), lineCount: 0)
+    }
+
+    private func parseAppendedFile(_ url: URL, fromOffset offset: Int, cached: CachedFile) -> ParsedChunk {
+        readFile(url, fromOffset: offset, carryover: cached.trailingData, lineCount: cached.lineCount)
+    }
+
+    private func readFile(_ url: URL, fromOffset offset: Int, carryover: Data, lineCount initialLineCount: Int) -> ParsedChunk {
+        if let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize,
+           size > Self.maxFileBytes {
+            return ParsedChunk(entries: [], lineCount: 0, trailingData: Data(), bytesRead: 0)
+        }
+
+        guard let handle = try? FileHandle(forReadingFrom: url) else {
+            return ParsedChunk(entries: [], lineCount: initialLineCount, trailingData: carryover, bytesRead: 0)
+        }
+        defer { try? handle.close() }
+
+        handle.seek(toFileOffset: UInt64(offset))
+
+        var buffer = carryover
+        var entries: [UsageEntry] = []
+        var lines = initialLineCount
+        var bytesRead = 0
+
+        while let chunk = try? handle.read(upToCount: 64 * 1024), !chunk.isEmpty {
+            bytesRead += chunk.count
+            buffer.append(chunk)
+            drainCompleteLines(from: &buffer, into: &entries, lineCount: &lines)
+            if lines >= Self.maxLinesPerFile {
+                buffer.removeAll(keepingCapacity: false)
+                break
+            }
+        }
+
+        return ParsedChunk(entries: entries,
+                           lineCount: lines,
+                           trailingData: buffer,
+                           bytesRead: bytesRead)
+    }
+
+    private func drainCompleteLines(from buffer: inout Data, into entries: inout [UsageEntry], lineCount: inout Int) {
+        var nextStart = buffer.startIndex
+
+        while nextStart < buffer.endIndex,
+              let newline = buffer[nextStart...].firstIndex(of: 0x0A),
+              lineCount < Self.maxLinesPerFile {
+            let lineData = buffer[nextStart..<newline]
+            lineCount += 1
+            nextStart = buffer.index(after: newline)
+
+            let text = String(decoding: lineData, as: UTF8.self)
+            guard text.contains("\"input_tokens\"") else { continue }
+            if let entry = parseLine(text) {
+                entries.append(entry)
+            }
+        }
+
+        if nextStart > buffer.startIndex {
+            buffer.removeSubrange(buffer.startIndex..<nextStart)
+        }
+    }
+
+    private func fileID(for url: URL) -> UInt64? {
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let raw = attrs[.systemFileNumber] as? NSNumber else {
+            return nil
+        }
+        return raw.uint64Value
+    }
+
+    private func parseLine(_ line: String) -> UsageEntry? {
+        guard let data = line.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let type = json["type"] as? String, type == "assistant",
+              let msg = json["message"] as? [String: Any],
+              let usage = msg["usage"] as? [String: Any],
+              let ts = json["timestamp"] as? String,
+              let date = parseDate(ts)
+        else { return nil }
+
+        let reqId = json["requestId"] as? String ?? ""
+        let msgId = msg["id"] as? String ?? ""
+        guard !reqId.isEmpty || !msgId.isEmpty else { return nil }
+
+        // ccusage "auto" mode: prefer costUSD from JSONL if available
+        let costUSD = json["costUSD"] as? Double
+
+        return UsageEntry(
+            id: "\(msgId):\(reqId)", timestamp: date,
+            model: msg["model"] as? String ?? "unknown",
+            inputTokens: usage["input_tokens"] as? Int ?? 0,
+            outputTokens: usage["output_tokens"] as? Int ?? 0,
+            cacheCreationTokens: usage["cache_creation_input_tokens"] as? Int ?? 0,
+            cacheReadTokens: usage["cache_read_input_tokens"] as? Int ?? 0,
+            costUSD: costUSD)
+    }
+
+    private func parseDate(_ s: String) -> Date? {
+        Self.isoFull.date(from: s) ?? Self.isoBasic.date(from: s)
+    }
+}

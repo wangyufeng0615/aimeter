@@ -1,0 +1,10 @@
+build/
+.build/
+*.zip
+.DS_Store
+*.swp
+*~
+xcuserdata/
+*.xcuserstate
+.vscode/
+Resources/AppIcon-preview.png
