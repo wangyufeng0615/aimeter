@@ -29,7 +29,9 @@ brew install --cask aimeter
 
 从 [Releases](https://github.com/wangyufeng0615/aimeter/releases) 下载，解压后拖进 Applications。
 
-> **首次启动**：macOS 可能提示"未验证的开发者"，去 **系统设置 → 隐私与安全性 → 仍要打开**。如果装了 Claude Code，aimeter 还会弹窗请求在 `~/.claude/settings.json` 里加一条 `tee` hook，用于读取 rate limit。Codex 无需额外配置。
+> **首次启动**：macOS 会拦截，提示 *"Apple could not verify 'aimeter.app' is free of malware…"*（因为 app 未经 notarize）。先点 **Done**（⚠️ 不要点 Move to Bin，那会删掉 app），然后打开 **系统设置 → 隐私与安全性**，往下滚，在 aimeter 提示旁点 **仍要打开**，用密码或 Touch ID 确认。以后再打开就正常了。
+>
+> 如果装了 Claude Code，aimeter 还会弹窗请求在 `~/.claude/settings.json` 里加一条 `tee` hook，用于读取 rate limit。Codex 无需额外配置。
 
 ## 隐私
 

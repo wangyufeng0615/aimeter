@@ -42,6 +42,10 @@ enum CodexReader {
     private static let sessionsDir = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent(".codex/sessions")
 
+    /// Hard cap matching UsageStore.maxFileBytes — skip pathological session
+    /// files rather than risk OOM when accumulating the decode buffer.
+    private static let maxFileBytes: Int = 64 * 1024 * 1024
+
     private static let isoFull: ISO8601DateFormatter = {
         let f = ISO8601DateFormatter()
         f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -95,6 +99,13 @@ enum CodexReader {
     }
 
     private static func parseSessionFile(_ url: URL, cutoff: Date) -> [UsageEntry]? {
+        if let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize,
+           size > maxFileBytes {
+            // Skip oversized sessions silently — returning an empty array
+            // (not nil) signals a non-error skip so the caller keeps
+            // processing other files.
+            return []
+        }
         guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
         defer { try? handle.close() }
 

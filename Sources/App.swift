@@ -4,6 +4,7 @@ import AppKit
 @main
 struct AIMeterApp: App {
     @StateObject private var store = UsageStore()
+    @StateObject private var imageCache = StackedImageCache()
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
     init() {
@@ -15,7 +16,7 @@ struct AIMeterApp: App {
             DetailView(store: store)
         } label: {
             if store.showCodex && UsageStore.claudeInstalled,
-               let image = stackedImage(
+               let image = imageCache.image(
                    top: "Claude Code \(Int(store.claudePct))%",
                    bottom: "Codex \(Int(store.codexPct))%"
                ) {
@@ -33,9 +34,26 @@ struct AIMeterApp: App {
         }
         .windowResizability(.contentSize)
     }
+}
 
-    @MainActor
-    private func stackedImage(top: String, bottom: String) -> NSImage? {
+/// Caches the rasterized menu-bar label so identical (top, bottom) inputs
+/// skip the ImageRenderer → SwiftUI layout → rasterize pipeline. The label
+/// is re-evaluated every time @Published fields on the store change (every
+/// 2 s with the new rate timer), so caching matters.
+@MainActor
+final class StackedImageCache: ObservableObject {
+    private var cached: (top: String, bottom: String, image: NSImage)?
+
+    func image(top: String, bottom: String) -> NSImage? {
+        if let c = cached, c.top == top, c.bottom == bottom {
+            return c.image
+        }
+        guard let rendered = render(top: top, bottom: bottom) else { return nil }
+        cached = (top, bottom, rendered)
+        return rendered
+    }
+
+    private func render(top: String, bottom: String) -> NSImage? {
         let view = VStack(alignment: .trailing, spacing: 0) {
             Text(top)
             Text(bottom)

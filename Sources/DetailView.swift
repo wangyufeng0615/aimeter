@@ -107,7 +107,7 @@ struct DetailView: View {
         case .available:
             return S.noData
         case .waitingForSessionData:
-            return S.noData
+            return S.claudeRateWaiting
         case .rateLimitsUnavailable:
             return S.claudeRateUnavailable
         }
@@ -173,7 +173,11 @@ struct DetailView: View {
             }
 
             if !hasRate {
-                Text(emptyMessage).font(Font2.meta).foregroundColor(.secondary).opacity(0.6)
+                Text(emptyMessage)
+                    .font(Font2.meta)
+                    .foregroundColor(.secondary)
+                    .opacity(0.6)
+                    .fixedSize(horizontal: false, vertical: true)
                     .padding(.top, 5)
             }
         }

@@ -26,8 +26,15 @@ enum S {
     static var settings: String     { zh ? "设置" : "Settings" }
     static var title: String        { "aimeter" }
     static var noData: String       { zh ? "等待会话数据…" : "Waiting for session data…" }
+    static var claudeRateWaiting: String {
+        zh
+            ? "在 Claude Code 里发一条消息即可显示 5H / 7D 限额"
+            : "Send a message in Claude Code to populate 5H / 7D limits."
+    }
     static var claudeRateUnavailable: String {
-        zh ? "当前未拿到 Claude 5H/7D 限额" : "Claude 5H/7D limits are currently unavailable."
+        zh
+            ? "当前账号未返回 5H / 7D 限额数据（可能非订阅账号）"
+            : "5H / 7D limits are not provided by this account (non-subscription?)."
     }
     static var week: String         { zh ? "本周" : "Week" }
 

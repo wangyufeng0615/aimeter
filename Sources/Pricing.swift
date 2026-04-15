@@ -12,7 +12,8 @@ enum Pricing {
         let cacheReadTiered: Double?
     }
 
-    private static let tieredThreshold = 200_000
+    // `internal` so @testable can cover the tier-boundary semantics directly.
+    static let tieredThreshold = 200_000
 
     // Hardcoded fallback — matches LiteLLM pricing as of 2026-04.
     private static let defaultRates: [String: Rate] = [
@@ -103,7 +104,8 @@ enum Pricing {
         return Double(totalTokens) * blended
     }
 
-    private static func tiered(_ tokens: Int, base: Double, tier: Double?) -> Double {
+    // `internal` so @testable tests can verify the tier-boundary math.
+    static func tiered(_ tokens: Int, base: Double, tier: Double?) -> Double {
         guard tokens > 0 else { return 0 }
         guard let tier, tokens > tieredThreshold else {
             return Double(tokens) * base

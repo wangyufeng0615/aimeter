@@ -2,11 +2,11 @@ import AppKit
 import Foundation
 
 enum SetupHelper {
-    private static let rateFile = FileManager.default.homeDirectoryForCurrentUser
+    static let rateFile = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent(".claude/usage-rate.json")
-    private static let settingsFile = FileManager.default.homeDirectoryForCurrentUser
+    static let settingsFile = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent(".claude/settings.json")
-    private static let teeFragment = "tee ~/.claude/usage-rate.json"
+    static let teeFragment = "tee ~/.claude/usage-rate.json"
 
     /// Check on launch and prompt user if needed. Call from main thread.
     static func checkOnLaunch() {
@@ -21,8 +21,8 @@ enum SetupHelper {
     /// Check whether the hook is currently installed (for Settings display).
     /// Matches either `~/.claude/usage-rate.json` (tilde form) or the fully
     /// expanded path — shells may expand `~` when the user saves the file.
-    static func isHookInstalled() -> Bool {
-        guard let json = readSettings(),
+    static func isHookInstalled(at settingsFile: URL = SetupHelper.settingsFile) -> Bool {
+        guard let json = readSettings(at: settingsFile),
               let sl = json["statusLine"] as? [String: Any],
               let cmd = sl["command"] as? String
         else { return false }
@@ -39,8 +39,8 @@ enum SetupHelper {
 
     /// Uninstall the tee hook (restore statusLine to what it was without our prefix).
     @discardableResult
-    static func uninstallHook() -> Bool {
-        guard var json = readSettings() else { return false }
+    static func uninstallHook(at settingsFile: URL = SetupHelper.settingsFile) -> Bool {
+        guard var json = readSettings(at: settingsFile) else { return false }
         guard let sl = json["statusLine"] as? [String: Any],
               let cmd = sl["command"] as? String,
               cmd.contains("tee"), cmd.contains("usage-rate.json")
@@ -136,14 +136,14 @@ enum SetupHelper {
 
     // MARK: - Pre-flight safety checks
 
-    private enum PreflightIssue {
+    enum PreflightIssue {
         case unreadable          // file exists but can't read
         case malformed           // file exists but isn't valid JSON
         case symlink             // file is a symlink
         case unexpectedFormat    // statusLine exists but in unexpected shape
     }
 
-    private static func preflight() -> PreflightIssue? {
+    static func preflight(at settingsFile: URL = SetupHelper.settingsFile) -> PreflightIssue? {
         guard FileManager.default.fileExists(atPath: settingsFile.path) else {
             // No settings file yet — safe to create from scratch
             return nil
@@ -173,14 +173,14 @@ enum SetupHelper {
 
     // MARK: - Inject
 
-    private enum InjectResult {
+    enum InjectResult: Equatable {
         case success
         case failed(PreflightIssue)
     }
 
-    private static func injectTee() -> InjectResult {
+    static func injectTee(at settingsFile: URL = SetupHelper.settingsFile) -> InjectResult {
         // Final preflight (file may have changed since prompt)
-        if let issue = preflight() { return .failed(issue) }
+        if let issue = preflight(at: settingsFile) { return .failed(issue) }
 
         // Snapshot the original bytes + mtime — used as TOCTOU guard before write
         let fileExists = FileManager.default.fileExists(atPath: settingsFile.path)
@@ -226,7 +226,7 @@ enum SetupHelper {
             let backup = settingsFile.path + ".bak-\(stamp)"
             guard (try? FileManager.default.copyItem(atPath: settingsFile.path, toPath: backup)) != nil
             else { return .failed(.unreadable) }
-            cleanupBackups(keeping: 3)
+            cleanupBackups(at: settingsFile, keeping: 3)
         }
 
         return ((try? newData.write(to: settingsFile, options: .atomic)) != nil)
@@ -234,7 +234,7 @@ enum SetupHelper {
     }
 
     /// Keep only the most recent N backup files
-    private static func cleanupBackups(keeping limit: Int) {
+    static func cleanupBackups(at settingsFile: URL = SetupHelper.settingsFile, keeping limit: Int) {
         let dir = settingsFile.deletingLastPathComponent()
         let prefix = settingsFile.lastPathComponent + ".bak-"
         guard let urls = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)
@@ -246,7 +246,7 @@ enum SetupHelper {
         }
     }
 
-    private static func readSettings() -> [String: Any]? {
+    static func readSettings(at settingsFile: URL = SetupHelper.settingsFile) -> [String: Any]? {
         guard let data = try? Data(contentsOf: settingsFile),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { return nil }

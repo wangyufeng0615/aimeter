@@ -66,6 +66,7 @@ final class UsageStore: ObservableObject {
     @Published var isLoading = true
 
     private var timer: Timer?
+    private var rateTimer: Timer?
     private let projectsDir: URL
     private let now: Clock
     private let claudeRateReader: RateReader
@@ -76,8 +77,11 @@ final class UsageStore: ObservableObject {
 
     // File cache lives on the main thread; captured into Stage 2 by value,
     // written back on main when Stage 2 completes. `stage2InFlight` prevents
-    // overlapping loads that would race on the cache.
+    // overlapping loads that would race on the cache. `stage1InFlight`
+    // serializes rate-limit reads so out-of-order callbacks can't overwrite
+    // fresher data with stale snapshots.
     private var fileCache: [String: CachedFile] = [:]
+    private var stage1InFlight = false
     private var stage2InFlight = false
     private var ccSignature = CollectionSignature.empty
     private var cxSignature = CollectionSignature.empty
@@ -101,6 +105,7 @@ final class UsageStore: ObservableObject {
         autoload: Bool = true,
         autoRefresh: Bool = true,
         refreshInterval: TimeInterval = 15,
+        rateRefreshInterval: TimeInterval = 2,
         now: @escaping Clock = Date.init,
         claudeRateReader: @escaping RateReader = ClaudeRateReader.read,
         claudeRateStatusReader: @escaping () -> ClaudeRateStatus = ClaudeRateReader.status,
@@ -123,10 +128,16 @@ final class UsageStore: ObservableObject {
             timer = Timer.scheduledTimer(withTimeInterval: refreshInterval, repeats: true) { [weak self] _ in
                 self?.loadAsync()
             }
+            // Rate limits are cheap to read (a few KB) and the data the user
+            // cares about most right after installing the hook. Poll them
+            // faster than the full JSONL scan so new data shows up quickly.
+            rateTimer = Timer.scheduledTimer(withTimeInterval: rateRefreshInterval, repeats: true) { [weak self] _ in
+                self?.loadRateLimitsAsync()
+            }
         }
     }
 
-    deinit { timer?.invalidate() }
+    deinit { timer?.invalidate(); rateTimer?.invalidate() }
 
     // MARK: - Installed detection
 
@@ -233,14 +244,7 @@ final class UsageStore: ObservableObject {
     }
 
     private func loadAsync() {
-        // Stage 1: Rate limits — fast, show immediately
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            guard let self else { return }
-            let rates = self.loadRateLimits()
-            DispatchQueue.main.async {
-                self.applyRateLimits(claude: rates.claude, claudeStatus: rates.claudeStatus, codex: rates.codex)
-            }
-        }
+        loadRateLimitsAsync()
 
         // Stage 2: Token data — slow, with race-guard
         guard !stage2InFlight else { return }
@@ -253,6 +257,20 @@ final class UsageStore: ObservableObject {
             DispatchQueue.main.async {
                 self.applyTokenData(result)
                 self.stage2InFlight = false
+            }
+        }
+    }
+
+    /// Stage 1 only — fast path, runs on the dedicated rate-limit timer.
+    private func loadRateLimitsAsync() {
+        guard !stage1InFlight else { return }
+        stage1InFlight = true
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+            let rates = self.loadRateLimits()
+            DispatchQueue.main.async {
+                self.applyRateLimits(claude: rates.claude, claudeStatus: rates.claudeStatus, codex: rates.codex)
+                self.stage1InFlight = false
             }
         }
     }

@@ -16,6 +16,45 @@ final class PricingTests: XCTestCase {
         XCTAssertEqual(Pricing.modelFamily("claude-haiku-4-5"), "claude-haiku-4-5")
     }
 
+    func testTieredBelowThresholdUsesBasePriceOnly() {
+        // 100k tokens with a configured tier stays on base price
+        let cost = Pricing.tiered(100_000, base: 1e-6, tier: 2e-6)
+        XCTAssertEqual(cost, 0.1, accuracy: 1e-12)
+    }
+
+    func testTieredExactlyAtThresholdUsesBasePriceOnly() {
+        // Exactly at 200k — condition is `> tieredThreshold`, so still base
+        let cost = Pricing.tiered(Pricing.tieredThreshold, base: 1e-6, tier: 2e-6)
+        XCTAssertEqual(cost, 0.2, accuracy: 1e-12)
+    }
+
+    func testTieredJustAboveThresholdSplitsPriceCorrectly() {
+        // 200_001 → first 200k at base, 1 token at tier
+        let cost = Pricing.tiered(Pricing.tieredThreshold + 1, base: 1e-6, tier: 2e-6)
+        let expected = Double(Pricing.tieredThreshold) * 1e-6 + 1 * 2e-6
+        XCTAssertEqual(cost, expected, accuracy: 1e-12)
+    }
+
+    func testTieredFarAboveThresholdSplitsPriceCorrectly() {
+        // 500k → 200k base + 300k tier
+        let cost = Pricing.tiered(500_000, base: 1e-6, tier: 2e-6)
+        let expected = Double(Pricing.tieredThreshold) * 1e-6
+                     + Double(500_000 - Pricing.tieredThreshold) * 2e-6
+        XCTAssertEqual(cost, expected, accuracy: 1e-12)
+    }
+
+    func testTieredWithNilTierAlwaysUsesBase() {
+        // No tier configured → 500k tokens at base
+        let cost = Pricing.tiered(500_000, base: 1e-6, tier: nil)
+        XCTAssertEqual(cost, 0.5, accuracy: 1e-12)
+    }
+
+    func testTieredNonPositiveTokensReturnsZero() {
+        XCTAssertEqual(Pricing.tiered(0, base: 1e-6, tier: 2e-6), 0)
+        XCTAssertEqual(Pricing.tiered(-1, base: 1e-6, tier: 2e-6), 0)
+        XCTAssertEqual(Pricing.tiered(-100_000, base: 1e-6, tier: nil), 0)
+    }
+
     func testParseLiteLLMDoesNotLetProOrLegacyOverwriteBaseModels() {
         let parsed = Pricing.parseLiteLLM([
             "gpt-5.4-pro": [

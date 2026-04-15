@@ -119,8 +119,8 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
                 LabeledContent(S.zh ? "源码" : "Source") {
-                    AboutLink("github.com/USER/aimeter",
-                              url: "https://github.com/USER/aimeter")
+                    AboutLink("github.com/wangyufeng0615/aimeter",
+                              url: "https://github.com/wangyufeng0615/aimeter")
                 }
             }
         }

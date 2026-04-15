@@ -29,7 +29,9 @@ brew install --cask aimeter
 
 Download from [Releases](https://github.com/wangyufeng0615/aimeter/releases), unzip, drag to Applications.
 
-> **First launch**: macOS may show "unverified developer" — go to **System Settings → Privacy & Security → Open Anyway**. If Claude Code is installed, aimeter also prompts to add a `tee` hook to `~/.claude/settings.json` so it can read rate limits. Codex needs no setup.
+> **First launch**: macOS blocks the app with *"Apple could not verify 'aimeter.app' is free of malware…"* because it isn't notarized. Click **Done** (⚠️ not "Move to Bin"), then open **System Settings → Privacy & Security**, scroll down, and click **Open Anyway** next to the aimeter notice. Confirm with password/Touch ID. Future launches work normally.
+>
+> If Claude Code is installed, aimeter also prompts to add a `tee` hook to `~/.claude/settings.json` so it can read rate limits. Codex needs no setup.
 
 ## Privacy
 
