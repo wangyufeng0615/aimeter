@@ -62,16 +62,18 @@ swift test      # 跑单元测试（SPM，不走 Makefile）
 
 ### 新版本发布步骤
 
-1. Bump 版本号（两处要同步）：
-   - `Info.plist`：`CFBundleShortVersionString` + `CFBundleVersion`
+1. Bump 版本号：
+   - `Info.plist`：`CFBundleShortVersionString` 改 marketing 版本（如 `0.2.0`）；`CFBundleVersion` 递增 build 号（整数，严格单调递增，不能重复或回退）
    - `CHANGELOG.md`：`[Unreleased]` 改为新版本号 + 日期
-2. 本地验证：`rm -rf build && make release` 生成 `build/aimeter.zip`
+2. 本地验证：`rm -rf build && make release` 生成 `build/aimeter.zip`（ad-hoc 签名，仅验证编译）
 3. commit + push main
 4. 打 tag：`git tag vX.Y.Z && git push origin vX.Y.Z`
 5. GitHub Action (`.github/workflows/release.yml`) 自动：
-   - 用 macOS runner 编译 universal binary → zip
-   - 创建 GitHub Release（附 zip + SHA256 in body）
-   - 跨 repo 推 `Casks/aimeter.rb` bump version/sha256 到 tap
+   - 从 Secrets 恢复 Developer ID 证书到临时 keychain + 注册 notarytool profile
+   - 编译 universal binary → Developer ID 签名（Hardened Runtime + secure timestamp）
+   - 提交 Apple notary service → staple ticket → 重新打包 zip
+   - 创建 GitHub Release + 跨 repo 推 Homebrew cask
+   - 签名 secret 缺失时自动降级为 ad-hoc zip（不会 break）
 6. 验证：`gh run watch --repo wangyufeng0615/aimeter`
 
 ### Homebrew Tap
@@ -87,13 +89,25 @@ brew tap wangyufeng0615/aimeter
 brew install --cask aimeter
 ```
 
-### `HOMEBREW_TAP_TOKEN` secret
+### Secrets 配置
 
-release.yml 的 "Bump Homebrew tap" step 需要跨 repo 写 tap 仓库，要 `secrets.HOMEBREW_TAP_TOKEN`。推荐用 fine-grained PAT：
-- 打开 https://github.com/settings/personal-access-tokens/new
-- Repository access: 只勾 `homebrew-aimeter`
-- Permissions → Repository permissions → Contents: Read and write
-- 生成后：`gh secret set HOMEBREW_TAP_TOKEN --repo wangyufeng0615/aimeter`
+release.yml 使用 7 个 GitHub Secrets。签名相关的 6 个缺任何一个都会自动降级为 ad-hoc 发布：
+
+| Secret | 用途 |
+|--------|------|
+| `DEVELOPER_ID_APPLICATION` | 证书名，形如 `Developer ID Application: Your Name (TEAMID)` |
+| `DEVELOPER_ID_CERT_P12` | 证书 .p12 的 base64（`base64 -i cert.p12 \| pbcopy`） |
+| `DEVELOPER_ID_CERT_PASSWORD` | 导出 .p12 时设置的密码 |
+| `NOTARY_API_KEY_P8` | App Store Connect API Key 的 .p8 base64 |
+| `NOTARY_KEY_ID` | API Key 的 Key ID（10 字符） |
+| `NOTARY_ISSUER_ID` | Team Issuer ID（UUID） |
+| `HOMEBREW_TAP_TOKEN` | 跨 repo 推 tap 的 fine-grained PAT |
+
+**Notary API Key 获取**：App Store Connect → Users and Access → Integrations → Team Keys → 新建 Key（Access 选 Developer 即可）。.p8 文件**只能下载一次**，保存好。
+
+**Developer ID 证书导出**：Xcode → Settings → Accounts → Manage Certificates → 右键 Developer ID Application → Export Certificate → 设密码保存 .p12。
+
+**HOMEBREW_TAP_TOKEN**：fine-grained PAT，只勾 `homebrew-aimeter` repo + Contents: Read and write。生成后 `gh secret set HOMEBREW_TAP_TOKEN --repo wangyufeng0615/aimeter`。
 
 ### 发布后端到端验证
 
@@ -102,7 +116,8 @@ brew untap wangyufeng0615/aimeter 2>/dev/null || true
 brew tap wangyufeng0615/aimeter
 brew install --cask aimeter
 open /Applications/aimeter.app
-# 首次启动被 Gatekeeper 拦时：System Settings → Privacy & Security → Open Anyway
+# 公证通过的 app 首次启动不会被 Gatekeeper 拦
+# 可选验证：spctl -a -vvv -t install /Applications/aimeter.app  # 期望 source=Notarized Developer ID
 ```
 
 ### 手动修复 tap（Action 挂了时的 fallback）
@@ -117,8 +132,28 @@ git commit -am "aimeter ${VERSION}"
 git push
 ```
 
-### 签名现状
+### 签名与公证
 
-当前 ad-hoc 签名（`codesign --sign -`），未 notarize。用户首次启动要走 **System Settings → Privacy & Security → Open Anyway**。
+**发布产物**：Developer ID 签名 + Hardened Runtime + Apple Notary Service 公证 + ticket staple。用户双击即运行。
 
-未来升级路径：买 Apple Developer Program（$99/年）→ 在 release.yml 里加 `codesign --options runtime --sign "Developer ID Application: ..."` + `xcrun notarytool submit` + `xcrun stapler staple`。Homebrew 官方 cask 也会从 2026-09 起要求 notarize，想进主 cask 必须做。
+**本地开发**：`make build` / `make release` 走 ad-hoc 签名（仍启用 Hardened Runtime，保持行为和发布一致）。无需证书。
+
+**CI 降级**：`DEVELOPER_ID_*` / `NOTARY_*` secret 任一缺失时，release.yml 自动发 ad-hoc zip，不 break 流程。降级发布的 release notes 会自动提示用户如何绕过 Gatekeeper。
+
+### 本地 notarize（可选）
+
+一次性存 notary 凭证到 Keychain：
+```bash
+xcrun notarytool store-credentials aimeter-notary \
+    --key ~/Downloads/AuthKey_XXXXX.p8 \
+    --key-id XXXXX \
+    --issuer XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX
+```
+
+之后本地完整走一遍签名+公证：
+```bash
+DEVELOPER_ID="Developer ID Application: Your Name (TEAMID)" make notarize
+# 产出 build/aimeter.zip（含 stapled .app）
+```
+
+Makefile 通过 `DEVELOPER_ID` 环境变量自动切换签名模式，留空则 ad-hoc。`NOTARY_PROFILE` 默认 `aimeter-notary`。

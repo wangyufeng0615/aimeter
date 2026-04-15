@@ -11,17 +11,107 @@ permissions:
 jobs:
   release:
     runs-on: macos-26
+    env:
+      DEVELOPER_ID: ${{ secrets.DEVELOPER_ID_APPLICATION }}
+      CERT_P12_BASE64: ${{ secrets.DEVELOPER_ID_CERT_P12 }}
+      CERT_PASSWORD: ${{ secrets.DEVELOPER_ID_CERT_PASSWORD }}
+      NOTARY_KEY_P8_BASE64: ${{ secrets.NOTARY_API_KEY_P8 }}
+      NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+      NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+      NOTARY_PROFILE: aimeter-notary
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build universal binary
+      - name: Run tests
+        run: swift test
+
+      - name: Check signing config
+        id: sign
+        run: |
+          if [ -n "$CERT_P12_BASE64" ] && [ -n "$CERT_PASSWORD" ] \
+             && [ -n "$NOTARY_KEY_P8_BASE64" ] && [ -n "$NOTARY_KEY_ID" ] \
+             && [ -n "$NOTARY_ISSUER_ID" ] && [ -n "$DEVELOPER_ID" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Signing secrets missing — shipping ad-hoc build (users will need to bypass Gatekeeper)"
+          fi
+
+      - name: Set up signing keychain
+        if: steps.sign.outputs.enabled == 'true'
+        run: |
+          set -euo pipefail
+          KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain-db"
+          KEYCHAIN_PASSWORD=$(openssl rand -base64 24)
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 3600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          # Prepend temp keychain to user search list so codesign finds the cert
+          EXISTING=$(security list-keychains -d user | sed -e 's/^[[:space:]]*//' -e 's/"//g' | tr '\n' ' ')
+          security list-keychains -d user -s "$KEYCHAIN_PATH" $EXISTING
+
+          CERT_PATH="$RUNNER_TEMP/cert.p12"
+          echo -n "$CERT_P12_BASE64" | base64 --decode > "$CERT_PATH"
+          security import "$CERT_PATH" -P "$CERT_PASSWORD" \
+              -t cert -f pkcs12 -k "$KEYCHAIN_PATH" \
+              -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: \
+              -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          rm "$CERT_PATH"
+
+          KEY_PATH="$RUNNER_TEMP/notary.p8"
+          echo -n "$NOTARY_KEY_P8_BASE64" | base64 --decode > "$KEY_PATH"
+          xcrun notarytool store-credentials "$NOTARY_PROFILE" \
+              --key "$KEY_PATH" \
+              --key-id "$NOTARY_KEY_ID" \
+              --issuer "$NOTARY_ISSUER_ID" \
+              --keychain "$KEYCHAIN_PATH"
+          rm "$KEY_PATH"
+
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+
+      - name: Build, sign, notarize
+        if: steps.sign.outputs.enabled == 'true'
+        run: make notarize
+
+      - name: Build (ad-hoc fallback)
+        if: steps.sign.outputs.enabled != 'true'
         run: make release
+
+      - name: Cleanup keychain
+        if: always() && env.KEYCHAIN_PATH != ''
+        run: security delete-keychain "$KEYCHAIN_PATH" || true
 
       - name: Compute SHA256
         id: hash
         run: echo "sha256=$(shasum -a 256 build/aimeter.zip | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
 
-      - name: Create release
+      - name: Create release (signed)
+        if: steps.sign.outputs.enabled == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: build/aimeter.zip
+          generate_release_notes: true
+          body: |
+            ## Install
+
+            **Homebrew**
+            ```bash
+            brew tap wangyufeng0615/aimeter
+            brew install --cask aimeter
+            ```
+
+            **Manual**
+            1. Download `aimeter.zip` below
+            2. Unzip and drag `aimeter.app` to Applications
+            3. Double-click to launch — signed and notarized by Apple.
+
+            SHA256: `${{ steps.hash.outputs.sha256 }}`
+
+      - name: Create release (unsigned)
+        if: steps.sign.outputs.enabled != 'true'
         uses: softprops/action-gh-release@v2
         with:
           files: build/aimeter.zip

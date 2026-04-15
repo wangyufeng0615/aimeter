@@ -6,6 +6,7 @@ MACOS := $(CONTENTS)/MacOS
 RESOURCES := $(CONTENTS)/Resources
 BINARY := $(MACOS)/$(APP_NAME)
 ICON := Resources/AppIcon.icns
+ENTITLEMENTS := Resources/aimeter.entitlements
 
 SOURCES := $(wildcard Sources/*.swift)
 ARCH := $(shell uname -m)
@@ -17,15 +18,27 @@ ifneq ($(SDK),)
 endif
 SWIFTC_FLAGS := $(SWIFTC_BASE) -target $(ARCH)-apple-macos14.0
 
-.PHONY: build universal clean install run release
+# Code signing. If DEVELOPER_ID env var is set (e.g. "Developer ID Application:
+# Name (TEAMID)") uses real signing + secure timestamp, otherwise ad-hoc.
+# Both modes enable Hardened Runtime so local builds match release behavior.
+DEVELOPER_ID ?=
+NOTARY_PROFILE ?= aimeter-notary
+
+ifeq ($(DEVELOPER_ID),)
+    CODESIGN_FLAGS := --force --options runtime --entitlements $(ENTITLEMENTS) --sign -
+else
+    CODESIGN_FLAGS := --force --options runtime --timestamp --entitlements $(ENTITLEMENTS) --sign "$(DEVELOPER_ID)"
+endif
+
+.PHONY: build universal clean install run release notarize
 
 build: $(BINARY) $(CONTENTS)/Info.plist $(RESOURCES)/AppIcon.icns
+	@codesign $(CODESIGN_FLAGS) $(APP_BUNDLE)
 	@echo "✓ $(APP_BUNDLE)"
 
 $(BINARY): $(SOURCES)
 	@mkdir -p $(MACOS)
 	swiftc $(SWIFTC_FLAGS) $(SOURCES) -o $(BINARY)
-	@codesign --force --sign - $(APP_BUNDLE) 2>/dev/null || true
 
 $(CONTENTS)/Info.plist: Info.plist
 	@mkdir -p $(CONTENTS)
@@ -45,7 +58,8 @@ universal: $(SOURCES) Info.plist
 	@mkdir -p $(CONTENTS) $(RESOURCES)
 	cp Info.plist $(CONTENTS)/Info.plist
 	cp $(ICON) $(RESOURCES)/AppIcon.icns
-	@codesign --force --sign - $(APP_BUNDLE)
+	@codesign $(CODESIGN_FLAGS) $(APP_BUNDLE)
+	@codesign --verify --strict --verbose=2 $(APP_BUNDLE)
 	@echo "✓ Universal $(APP_BUNDLE)"
 
 clean:
@@ -59,7 +73,26 @@ install: build
 run: build
 	@open $(APP_BUNDLE)
 
-# Release: build universal + zip for distribution
+# Release: universal build + zip. Ad-hoc signed unless DEVELOPER_ID is set,
+# in which case the zip contains a Developer ID-signed (but not notarized) .app.
+# For a user-ready release, use `notarize` instead.
 release: universal
-	cd $(BUILD_DIR) && zip -r $(APP_NAME).zip $(APP_NAME).app
+	cd $(BUILD_DIR) && rm -f $(APP_NAME).zip && zip -qr $(APP_NAME).zip $(APP_NAME).app
 	@echo "✓ $(BUILD_DIR)/$(APP_NAME).zip"
+
+# Notarize: sign with Developer ID, submit to Apple, staple ticket, re-zip.
+# Requires:
+#   - DEVELOPER_ID env var (e.g. "Developer ID Application: Name (TEAMID)")
+#   - NOTARY_PROFILE keychain item stored via:
+#       xcrun notarytool store-credentials "$(NOTARY_PROFILE)" \
+#           --key <AuthKey.p8> --key-id <KEY_ID> --issuer <ISSUER_UUID>
+notarize: universal
+	@test -n "$(DEVELOPER_ID)" || { echo "ERROR: set DEVELOPER_ID env var"; exit 1; }
+	cd $(BUILD_DIR) && rm -f $(APP_NAME).zip && zip -qr $(APP_NAME).zip $(APP_NAME).app
+	xcrun notarytool submit $(BUILD_DIR)/$(APP_NAME).zip \
+	    --keychain-profile "$(NOTARY_PROFILE)" --wait
+	xcrun stapler staple $(APP_BUNDLE)
+	xcrun stapler validate $(APP_BUNDLE)
+	spctl -a -vvv -t install $(APP_BUNDLE)
+	cd $(BUILD_DIR) && rm -f $(APP_NAME).zip && zip -qr $(APP_NAME).zip $(APP_NAME).app
+	@echo "✓ Notarized: $(BUILD_DIR)/$(APP_NAME).zip"
