@@ -1,10 +1,14 @@
 # aimeter
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Downloads](https://img.shields.io/github/downloads/wangyufeng0615/aimeter/total)](https://github.com/wangyufeng0615/aimeter/releases)
+[![Last commit](https://img.shields.io/github/last-commit/wangyufeng0615/aimeter)](https://github.com/wangyufeng0615/aimeter/commits)
 
 [English README](README.md)
 
 一个轻量级 macOS 菜单栏应用，实时监控你的 [Claude Code](https://code.claude.com/) 和 [Codex CLI](https://github.com/openai/codex) 用量。
+
+> 作者日常自用的工具，会精心长期维护。
 
 <p align="center">
   <img src="docs/screenshot.png" alt="aimeter 菜单栏弹窗" width="300">
@@ -12,28 +16,26 @@
 
 ## 特性
 
-- 直接读取 Claude Code 和 Codex CLI 本地数据中的 5h / 7d rate limit，不是估算
-- 按天 / 按周统计 token 用量和费用，并按模型分别展示
-- 中英双语，跟随系统语言自动切换
+- 准确显示 5 小时限额 / 周限额
+- 展示 token 用量和费用
+- 只用 Claude Code / Codex 其中一个？另一个的面板会自动隐藏
+- 数据全部来自官方 CLI 的本地文件，不经任何第三方接口
 
 ## 安装
 
-### Homebrew（推荐）
-
 ```bash
-brew tap wangyufeng0615/aimeter
-brew install --cask aimeter
+brew tap wangyufeng0615/aimeter && brew install --cask aimeter
 ```
 
-### 预编译 zip
+或从 [Releases](https://github.com/wangyufeng0615/aimeter/releases) 下载 zip。
 
-从 [Releases](https://github.com/wangyufeng0615/aimeter/releases) 下载，解压后拖进 Applications。
+自动更新：aimeter 每天自动检查新版本，在 app 内提示升级；也可以在设置 → 更新里手动触发，或直接运行 `brew upgrade --cask aimeter`。
 
-> 如果装了 Claude Code，aimeter 会弹窗请求在 `~/.claude/settings.json` 里加一条 `tee` hook，用于读取 rate limit。Codex 无需额外配置。
+> 首次启动会请求给 Claude Code 加 statusline hook，用于读取 rate limit。Codex 无需配置。
 
 ## 隐私
 
-aimeter 完全在本地运行。唯一的外部请求是从 [LiteLLM](https://github.com/BerriAI/litellm) GitHub 拉取定价数据——无遥测、无个人数据。详见 [SECURITY.md](SECURITY.md)。
+完全本地运行。唯一外部请求：从 [LiteLLM](https://github.com/BerriAI/litellm) 拉取定价数据。无遥测。详见 [SECURITY.md](SECURITY.md)。
 
 ## 开发
 

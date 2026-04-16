@@ -112,6 +112,12 @@ struct SettingsView: View {
                 }
             }
 
+#if canImport(Sparkle)
+            Section(header: sectionHeader(S.updatesSectionTitle)) {
+                UpdatesSettingsSection()
+            }
+#endif
+
             Section(header: sectionHeader(S.zh ? "关于" : "About")) {
                 LabeledContent(S.zh ? "版本" : "Version") {
                     Text(version)

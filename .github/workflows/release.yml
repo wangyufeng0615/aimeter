@@ -18,22 +18,30 @@ jobs:
       NOTARY_KEY_P8_BASE64: ${{ secrets.NOTARY_API_KEY_P8 }}
       NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
       NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+      SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history so we can commit appcast.xml back to main at the end
+          fetch-depth: 0
 
       - name: Run tests
         run: swift test
+
+      - name: Vendor Sparkle
+        run: make vendor-sparkle
 
       - name: Check signing config
         id: sign
         run: |
           if [ -n "$CERT_P12_BASE64" ] && [ -n "$CERT_PASSWORD" ] \
              && [ -n "$NOTARY_KEY_P8_BASE64" ] && [ -n "$NOTARY_KEY_ID" ] \
-             && [ -n "$NOTARY_ISSUER_ID" ] && [ -n "$DEVELOPER_ID" ]; then
+             && [ -n "$NOTARY_ISSUER_ID" ] && [ -n "$DEVELOPER_ID" ] \
+             && [ -n "$SPARKLE_PRIVATE_KEY" ]; then
             echo "enabled=true" >> "$GITHUB_OUTPUT"
           else
             echo "enabled=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::Signing secrets missing — shipping ad-hoc build (users will need to bypass Gatekeeper)"
+            echo "::warning::Signing secrets missing — shipping ad-hoc build (no appcast update either)"
           fi
 
       - name: Set up signing keychain
@@ -104,6 +112,8 @@ jobs:
             2. Unzip and drag `aimeter.app` to Applications
             3. Double-click to launch — signed and notarized by Apple.
 
+            Existing installations will be auto-updated by Sparkle within 24 h (or open Settings → Updates → Check for Updates…).
+
             SHA256: `${{ steps.hash.outputs.sha256 }}`
 
       - name: Create release (unsigned)
@@ -127,6 +137,67 @@ jobs:
             3. First launch: macOS may show "unverified developer" — go to **System Settings → Privacy & Security → Open Anyway**
 
             SHA256: `${{ steps.hash.outputs.sha256 }}`
+
+      # --- Sparkle appcast publish (only on signed releases) ------------------
+      # Done AFTER the GitHub release is created so the zip URL referenced by
+      # appcast.xml is guaranteed to resolve.
+      - name: Generate appcast.xml
+        if: steps.sign.outputs.enabled == 'true'
+        env:
+          VERSION: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          V="${VERSION#v}"
+          APPCAST_DIR="$RUNNER_TEMP/sparkle-updates"
+          APPCAST_PATH="$APPCAST_DIR/appcast.xml"
+          DOWNLOAD_PREFIX="https://github.com/${REPO}/releases/download/v${V}"
+
+          rm -rf "$APPCAST_DIR"
+          mkdir -p "$APPCAST_DIR"
+          cp build/aimeter.zip "$APPCAST_DIR/aimeter.zip"
+
+          # Seed APPCAST_PATH with the existing appcast on main so
+          # generate_appcast merges the new version into the historical list
+          # (it reads the -o target if it already exists).
+          git fetch origin main
+          if git cat-file -e origin/main:docs/appcast.xml 2>/dev/null; then
+            git show origin/main:docs/appcast.xml > "$APPCAST_PATH"
+          fi
+
+          # SPARKLE_PRIVATE_KEY is guaranteed present here by the sign-check
+          # step's guard, so no fallback branch is needed.
+          # --maximum-deltas 0: CI only retains the current archive, so skip
+          # binary delta generation until historical zips are preserved.
+          printf '%s' "$SPARKLE_PRIVATE_KEY" | Vendor/Sparkle/bin/generate_appcast \
+            --ed-key-file - \
+            --download-url-prefix "$DOWNLOAD_PREFIX" \
+            --link "https://github.com/${REPO}" \
+            --maximum-deltas 0 \
+            -o "$APPCAST_PATH" \
+            "$APPCAST_DIR"
+
+          cp "$APPCAST_PATH" "$RUNNER_TEMP/appcast.xml"
+
+      - name: Commit appcast.xml to main
+        if: steps.sign.outputs.enabled == 'true'
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          git checkout main
+          mkdir -p docs
+          cp "$RUNNER_TEMP/appcast.xml" docs/appcast.xml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/appcast.xml
+          if git diff --cached --quiet; then
+            echo "No appcast changes (race? same version re-tagged?)"
+            exit 0
+          fi
+          git commit -m "appcast: ${VERSION}"
+          git push origin main
 
       - name: Bump Homebrew tap
         env:

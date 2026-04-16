@@ -1,10 +1,14 @@
 # aimeter
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Downloads](https://img.shields.io/github/downloads/wangyufeng0615/aimeter/total)](https://github.com/wangyufeng0615/aimeter/releases)
+[![Last commit](https://img.shields.io/github/last-commit/wangyufeng0615/aimeter)](https://github.com/wangyufeng0615/aimeter/commits)
 
 [中文 README](README_CN.md)
 
 A lightweight macOS menu bar app that tracks your [Claude Code](https://code.claude.com/) and [Codex CLI](https://github.com/openai/codex) usage in real time.
+
+> A tool I use every day myself — carefully maintained for the long haul.
 
 <p align="center">
   <img src="docs/screenshot.png" alt="aimeter menu bar popover" width="300">
@@ -12,28 +16,26 @@ A lightweight macOS menu bar app that tracks your [Claude Code](https://code.cla
 
 ## Features
 
-- 5h / 7d rate limits read directly from Claude Code and Codex CLI local data — not estimates
-- Daily and weekly token + cost stats, broken down by model
-- Bilingual — auto-follows system locale (English / 中文)
+- Accurate 5-hour / weekly usage limits
+- Token usage and cost breakdown
+- Only use Claude Code or Codex? The other's panel stays hidden
+- All data comes from the official CLIs' local files — no third-party services
 
 ## Install
 
-### Homebrew (recommended)
-
 ```bash
-brew tap wangyufeng0615/aimeter
-brew install --cask aimeter
+brew tap wangyufeng0615/aimeter && brew install --cask aimeter
 ```
 
-### Pre-built zip
+Or grab the zip from [Releases](https://github.com/wangyufeng0615/aimeter/releases).
 
-Download from [Releases](https://github.com/wangyufeng0615/aimeter/releases), unzip, drag to Applications.
+Updates are automatic — aimeter checks once a day and prompts inside the app. You can also trigger a check from Settings → Updates, or run `brew upgrade --cask aimeter` yourself.
 
-> If Claude Code is installed, aimeter prompts to add a `tee` hook to `~/.claude/settings.json` so it can read rate limits. Codex needs no setup.
+> First launch asks to add a statusline hook for Claude Code. Codex needs no setup.
 
 ## Privacy
 
-aimeter runs entirely on your machine. The only outbound request fetches pricing data from the [LiteLLM](https://github.com/BerriAI/litellm) GitHub repo — no telemetry, no personal data. See [SECURITY.md](SECURITY.md) for details.
+Runs entirely on your machine. One outbound request: pricing data from [LiteLLM](https://github.com/BerriAI/litellm). No telemetry. See [SECURITY.md](SECURITY.md).
 
 ## Development
 

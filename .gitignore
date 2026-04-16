@@ -1,6 +1,7 @@
 build/
 .build/
 *.zip
+Vendor/
 .DS_Store
 *.swp
 *~

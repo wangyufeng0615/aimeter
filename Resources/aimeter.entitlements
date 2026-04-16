@@ -2,5 +2,12 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+    <!--
+      This entitlement is only used for local ad-hoc development builds.
+      Release builds re-sign Sparkle and its helpers with the same Developer ID
+      as the host app, so Library Validation should remain enabled there.
+    -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
 </dict>
 </plist>

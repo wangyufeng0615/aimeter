@@ -38,6 +38,11 @@ enum S {
     }
     static var week: String         { zh ? "本周" : "Week" }
 
+    // Updates (Sparkle)
+    static var checkForUpdates: String    { zh ? "检查更新…" : "Check for Updates…" }
+    static var autoCheckUpdates: String   { zh ? "自动检查更新" : "Automatically check for updates" }
+    static var updatesSectionTitle: String { zh ? "更新" : "Updates" }
+
     static func resetsIn(_ t: String) -> String {
         zh ? "\(t) 后重置" : "Resets in \(t)"
     }

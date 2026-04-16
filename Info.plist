@@ -13,9 +13,9 @@
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.2.0</string>
+    <string>0.3.0</string>
     <key>CFBundleVersion</key>
-    <string>2</string>
+    <string>3</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>ITSAppUsesNonExemptEncryption</key>
@@ -34,5 +34,15 @@
     <true/>
     <key>NSSupportsSuddenTermination</key>
     <true/>
+    <key>SUFeedURL</key>
+    <string>https://raw.githubusercontent.com/wangyufeng0615/aimeter/main/docs/appcast.xml</string>
+    <key>SUPublicEDKey</key>
+    <string>UJlsSfxZhe0jkPIz/EQYBfv3PrP4YdgkiqbIep8+VmE=</string>
+    <key>SUVerifyUpdateBeforeExtraction</key>
+    <true/>
+    <key>SUEnableAutomaticChecks</key>
+    <true/>
+    <key>SUScheduledCheckInterval</key>
+    <integer>86400</integer>
 </dict>
 </plist>

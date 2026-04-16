@@ -5,6 +5,9 @@ import AppKit
 struct AIMeterApp: App {
     @StateObject private var store = UsageStore()
     @StateObject private var imageCache = StackedImageCache()
+#if canImport(Sparkle)
+    @StateObject private var updater = AppUpdater()
+#endif
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
     init() {
@@ -31,6 +34,9 @@ struct AIMeterApp: App {
 
         Settings {
             SettingsView()
+#if canImport(Sparkle)
+                .environmentObject(updater)
+#endif
         }
         .windowResizability(.contentSize)
     }
