@@ -2,7 +2,7 @@
 
 ## Setup
 
-See README's [From source](README.md#from-source) section for build requirements. To run tests: `swift test`.
+Requires Xcode Command Line Tools (`swiftc`), targeting macOS 14.0+. See [CLAUDE.md](CLAUDE.md) for build commands (`make build`, `make run`, `swift test`).
 
 ## Project layout
 
@@ -22,7 +22,7 @@ Makefile        Build commands
 
 ## What we'd love
 
-- More test coverage beyond `UsageStoreTests`
+- More test coverage (currently: UsageStoreTests, SetupHelperTests, PricingTests)
 - Linux/Windows ports (via cross-platform Swift?)
 - Additional AI provider support (e.g., GitHub Copilot CLI)
 - Localization beyond English/Chinese
