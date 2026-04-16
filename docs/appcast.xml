@@ -9,7 +9,7 @@
             <sparkle:version>3</sparkle:version>
             <sparkle:shortVersionString>0.3.0</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
-            <enclosure url="https://github.com/wangyufeng0615/aimeter/releases/download/aimeter.zip" length="3604308" type="application/octet-stream" sparkle:edSignature="59KfSoxT+7NFftA3VRk6bNLWWlc6rbAHcy9iSX+k8gLFprNG4opk1cjcmqidfUFR6KOMpq0L/5pKyTQ8ij+eDA=="/>
+            <enclosure url="https://github.com/wangyufeng0615/aimeter/releases/download/v0.3.0/aimeter.zip" length="3604308" type="application/octet-stream" sparkle:edSignature="59KfSoxT+7NFftA3VRk6bNLWWlc6rbAHcy9iSX+k8gLFprNG4opk1cjcmqidfUFR6KOMpq0L/5pKyTQ8ij+eDA=="/>
         </item>
     </channel>
 </rss>

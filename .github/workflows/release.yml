@@ -151,7 +151,9 @@ jobs:
           V="${VERSION#v}"
           APPCAST_DIR="$RUNNER_TEMP/sparkle-updates"
           APPCAST_PATH="$APPCAST_DIR/appcast.xml"
-          DOWNLOAD_PREFIX="https://github.com/${REPO}/releases/download/v${V}"
+          # Trailing slash is required — generate_appcast treats the last
+          # path segment of a slash-less prefix as a filename and drops it.
+          DOWNLOAD_PREFIX="https://github.com/${REPO}/releases/download/v${V}/"
 
           rm -rf "$APPCAST_DIR"
           mkdir -p "$APPCAST_DIR"
