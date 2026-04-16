@@ -12,7 +12,7 @@ A lightweight macOS menu bar app that tracks your [Claude Code](https://code.cla
 
 ## Features
 
-- 5h / 7d rate limits as reported by the Claude Code and Codex APIs — not local estimates
+- 5h / 7d rate limits read directly from Claude Code and Codex CLI local data — not estimates
 - Daily and weekly token + cost stats, broken down by model
 - Bilingual — auto-follows system locale (English / 中文)
 
