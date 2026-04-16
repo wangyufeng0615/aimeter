@@ -117,7 +117,7 @@ brew tap wangyufeng0615/aimeter
 brew install --cask aimeter
 open /Applications/aimeter.app
 # 公证通过的 app 首次启动不会被 Gatekeeper 拦
-# 可选验证：spctl -a -vvv -t install /Applications/aimeter.app  # 期望 source=Notarized Developer ID
+# 可选验证：spctl -a -vvv -t execute /Applications/aimeter.app  # 期望 source=Notarized Developer ID
 ```
 
 ### 手动修复 tap（Action 挂了时的 fallback）

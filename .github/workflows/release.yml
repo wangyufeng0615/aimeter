@@ -18,7 +18,6 @@ jobs:
       NOTARY_KEY_P8_BASE64: ${{ secrets.NOTARY_API_KEY_P8 }}
       NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
       NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
-      NOTARY_PROFILE: aimeter-notary
     steps:
       - uses: actions/checkout@v4
 
@@ -45,7 +44,7 @@ jobs:
           KEYCHAIN_PASSWORD=$(openssl rand -base64 24)
 
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          security set-keychain-settings -lut 3600 "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
 
           # Prepend temp keychain to user search list so codesign finds the cert
@@ -61,16 +60,11 @@ jobs:
               -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           rm "$CERT_PATH"
 
-          KEY_PATH="$RUNNER_TEMP/notary.p8"
-          echo -n "$NOTARY_KEY_P8_BASE64" | base64 --decode > "$KEY_PATH"
-          xcrun notarytool store-credentials "$NOTARY_PROFILE" \
-              --key "$KEY_PATH" \
-              --key-id "$NOTARY_KEY_ID" \
-              --issuer "$NOTARY_ISSUER_ID" \
-              --keychain "$KEYCHAIN_PATH"
-          rm "$KEY_PATH"
+          NOTARY_KEY="$RUNNER_TEMP/notary.p8"
+          echo -n "$NOTARY_KEY_P8_BASE64" | base64 --decode > "$NOTARY_KEY"
 
           echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+          echo "NOTARY_KEY=$NOTARY_KEY" >> "$GITHUB_ENV"
 
       - name: Build, sign, notarize
         if: steps.sign.outputs.enabled == 'true'
@@ -80,9 +74,11 @@ jobs:
         if: steps.sign.outputs.enabled != 'true'
         run: make release
 
-      - name: Cleanup keychain
+      - name: Cleanup keychain & secrets
         if: always() && env.KEYCHAIN_PATH != ''
-        run: security delete-keychain "$KEYCHAIN_PATH" || true
+        run: |
+          security delete-keychain "$KEYCHAIN_PATH" || true
+          rm -f "$NOTARY_KEY"
 
       - name: Compute SHA256
         id: hash

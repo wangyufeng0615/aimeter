@@ -23,11 +23,20 @@ SWIFTC_FLAGS := $(SWIFTC_BASE) -target $(ARCH)-apple-macos14.0
 # Both modes enable Hardened Runtime so local builds match release behavior.
 DEVELOPER_ID ?=
 NOTARY_PROFILE ?= aimeter-notary
+NOTARY_KEY ?=
+NOTARY_KEY_ID ?=
+NOTARY_ISSUER_ID ?=
 
 ifeq ($(DEVELOPER_ID),)
     CODESIGN_FLAGS := --force --options runtime --entitlements $(ENTITLEMENTS) --sign -
 else
     CODESIGN_FLAGS := --force --options runtime --timestamp --entitlements $(ENTITLEMENTS) --sign "$(DEVELOPER_ID)"
+endif
+
+ifneq ($(NOTARY_KEY),)
+    NOTARY_FLAGS := --key "$(NOTARY_KEY)" --key-id "$(NOTARY_KEY_ID)" --issuer "$(NOTARY_ISSUER_ID)"
+else
+    NOTARY_FLAGS := --keychain-profile "$(NOTARY_PROFILE)"
 endif
 
 .PHONY: build universal clean install run release notarize
@@ -77,22 +86,23 @@ run: build
 # in which case the zip contains a Developer ID-signed (but not notarized) .app.
 # For a user-ready release, use `notarize` instead.
 release: universal
-	cd $(BUILD_DIR) && rm -f $(APP_NAME).zip && zip -qr $(APP_NAME).zip $(APP_NAME).app
+	cd $(BUILD_DIR) && rm -f $(APP_NAME).zip && \
+	    ditto -c -k --keepParent $(APP_NAME).app $(APP_NAME).zip
 	@echo "✓ $(BUILD_DIR)/$(APP_NAME).zip"
 
 # Notarize: sign with Developer ID, submit to Apple, staple ticket, re-zip.
-# Requires:
-#   - DEVELOPER_ID env var (e.g. "Developer ID Application: Name (TEAMID)")
-#   - NOTARY_PROFILE keychain item stored via:
-#       xcrun notarytool store-credentials "$(NOTARY_PROFILE)" \
-#           --key <AuthKey.p8> --key-id <KEY_ID> --issuer <ISSUER_UUID>
+# Requires DEVELOPER_ID env var. Notary auth: either set NOTARY_KEY +
+# NOTARY_KEY_ID + NOTARY_ISSUER_ID (CI), or use a stored keychain
+# profile via NOTARY_PROFILE (local, default: aimeter-notary).
 notarize: universal
 	@test -n "$(DEVELOPER_ID)" || { echo "ERROR: set DEVELOPER_ID env var"; exit 1; }
-	cd $(BUILD_DIR) && rm -f $(APP_NAME).zip && zip -qr $(APP_NAME).zip $(APP_NAME).app
+	cd $(BUILD_DIR) && rm -f $(APP_NAME).zip && \
+	    ditto -c -k --keepParent $(APP_NAME).app $(APP_NAME).zip
 	xcrun notarytool submit $(BUILD_DIR)/$(APP_NAME).zip \
-	    --keychain-profile "$(NOTARY_PROFILE)" --wait
+	    $(NOTARY_FLAGS) --wait
 	xcrun stapler staple $(APP_BUNDLE)
 	xcrun stapler validate $(APP_BUNDLE)
-	spctl -a -vvv -t install $(APP_BUNDLE)
-	cd $(BUILD_DIR) && rm -f $(APP_NAME).zip && zip -qr $(APP_NAME).zip $(APP_NAME).app
+	spctl -a -vvv -t execute $(APP_BUNDLE)
+	cd $(BUILD_DIR) && rm -f $(APP_NAME).zip && \
+	    ditto -c -k --keepParent $(APP_NAME).app $(APP_NAME).zip
 	@echo "✓ Notarized: $(BUILD_DIR)/$(APP_NAME).zip"
