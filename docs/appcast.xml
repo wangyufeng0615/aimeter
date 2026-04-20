@@ -3,6 +3,15 @@
     <channel>
         <title>aimeter</title>
         <item>
+            <title>0.3.1</title>
+            <pubDate>Mon, 20 Apr 2026 06:31:43 +0000</pubDate>
+            <link>https://github.com/wangyufeng0615/aimeter</link>
+            <sparkle:version>4</sparkle:version>
+            <sparkle:shortVersionString>0.3.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/wangyufeng0615/aimeter/releases/download/v0.3.1/aimeter.zip" length="3651581" type="application/octet-stream" sparkle:edSignature="u8B2MpGzfjC+/TYhm6EDLfqrxFCofXS8PhkkJu9+hcrxURAFdFGp3rkOlWCCIi290sOHBLMeFXb9S+DgQX41BA=="/>
+        </item>
+        <item>
             <title>0.3.0</title>
             <pubDate>Thu, 16 Apr 2026 05:15:09 +0000</pubDate>
             <link>https://github.com/wangyufeng0615/aimeter</link>
