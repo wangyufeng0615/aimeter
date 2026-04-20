@@ -96,8 +96,8 @@ struct DetailView: View {
                     emptyMessage: claudeEmptyRateMessage
                 )
             }
-            if store.showCodex {
-                rateCard(name: "Codex", rate: store.codexRate)
+            if UsageStore.codexInstalled {
+                rateCard(name: "Codex", rate: store.codexRate, emptyMessage: S.codexRateWaiting)
             }
         }
     }

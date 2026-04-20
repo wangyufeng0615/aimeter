@@ -151,6 +151,24 @@ final class UsageStoreTests: XCTestCase {
         XCTAssertEqual(store.lastTokenLoadStats.incrementalFiles, 0)
     }
 
+    @MainActor
+    func testClaudeModelsExcludeSyntheticEntries() throws {
+        let projectsDir = try makeProjectsDir()
+        let logFile = projectsDir.appendingPathComponent("session.jsonl")
+        let now = Date(timeIntervalSince1970: 1_776_150_400)
+
+        try write([
+            try usageLine(messageID: "m1", requestID: "r1", timestamp: now, model: "<synthetic>", input: 0, output: 0),
+            try usageLine(messageID: "m2", requestID: "r2", timestamp: now.addingTimeInterval(1), model: "claude-opus-4-6", input: 100, output: 20),
+        ].joined(separator: "\n") + "\n", to: logFile)
+
+        let store = makeStore(projectsDir: projectsDir, now: now)
+        store.refreshSynchronouslyForTesting()
+
+        XCTAssertEqual(store.ccEntries.map(\.model), ["<synthetic>", "claude-opus-4-6"])
+        XCTAssertEqual(store.ccModels.map(\.model), ["claude-opus-4-6"])
+    }
+
     private func makeStore(
         projectsDir: URL,
         now: Date,

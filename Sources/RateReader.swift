@@ -24,10 +24,8 @@ func normalizeTimestamp(_ value: Double) -> Date {
 // MARK: - Claude Code rate limits (from statusline JSON)
 
 enum ClaudeRateReader {
-    private static let defaultFilePath = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent(".claude/usage-rate.json")
-    private static let defaultCachePath = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent("Library/Caches/com.aimeter.app/claude-rate-v1.json")
+    private static var defaultFilePath: URL { AppPaths.claudeRateFile }
+    private static var defaultCachePath: URL { AppPaths.claudeRateCacheFile() }
 
     static func read() -> RateLimit? {
         inspect().rate
@@ -139,8 +137,7 @@ enum ClaudeRateReader {
 
 enum CodexRateReader {
     static func read() -> RateLimit? {
-        let sessionsDir = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".codex/sessions")
+        let sessionsDir = AppPaths.codexSessionsDir
         guard FileManager.default.fileExists(atPath: sessionsDir.path) else { return nil }
 
         guard let latest = findLatestRollout(in: sessionsDir) else { return nil }

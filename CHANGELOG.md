@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.3.1] - 2026-04-20
+
+### Added
+- Settings: "Paths" section — override `~/.claude` / `~/.codex` roots for non-standard installs. Auto-commit on Return or focus loss; inline warning if the directory doesn't exist.
+- `AppPaths` centralizes all path resolution; user-configured roots propagate to JSONL reading, rate readers, and statusline hook install/uninstall.
+- `UsageStore` listens for path changes and reloads (drops caches + stage guard via `loadGeneration`).
+
+### Changed
+- Menu bar label shortened: "Claude X%" instead of "Claude Code X%".
+- Detail view shows the Codex rate card whenever Codex is installed (with a "waiting for first message" empty state), matching Claude's behaviour.
+- Per-model breakdown filters out internal `<synthetic>` Claude entries.
+
+### Fixed
+- `SetupHelper` hook uninstall now strips both unquoted (`tee ~/.claude/...`) and shell-quoted (`tee '/custom path/...'`) tee prefixes.
+- Choose… button in Path rows no longer commits an unconfirmed draft if the file panel is cancelled.
+
 ## [0.2.0] - 2026-04-16
 
 ### Added

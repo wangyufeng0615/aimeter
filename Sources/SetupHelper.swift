@@ -2,11 +2,9 @@ import AppKit
 import Foundation
 
 enum SetupHelper {
-    static let rateFile = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent(".claude/usage-rate.json")
-    static let settingsFile = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent(".claude/settings.json")
-    static let teeFragment = "tee ~/.claude/usage-rate.json"
+    static var rateFile: URL { AppPaths.claudeRateFile }
+    static var settingsFile: URL { AppPaths.claudeSettingsFile }
+    static var teeFragment: String { "tee \(AppPaths.shellPath(rateFile))" }
 
     /// Check on launch and prompt user if needed. Call from main thread.
     static func checkOnLaunch() {
@@ -52,8 +50,11 @@ enum SetupHelper {
             atPath: settingsFile.path,
             toPath: settingsFile.path + ".bak-\(stamp)")
 
-        // Match the tee fragment with optional `~` or full path to usage-rate.json
-        let pattern = #"tee\s+(?:~|/[^\s]*)/\.claude/usage-rate\.json(?:\s*\|\s*)?"#
+        // Remove any tee prefix that writes to a usage-rate.json file.
+        // Handles both unquoted (tee ~/.claude/usage-rate.json) and shell-quoted
+        // forms (tee '/weird path/usage-rate.json'), including shell-escaped
+        // single quotes inside the quoted path.
+        let pattern = #"^tee\s+[^|]*?usage-rate\.json'?\s*(?:\|\s*)?"#
         let regex = try? NSRegularExpression(pattern: pattern)
         let range = NSRange(cmd.startIndex..., in: cmd)
         let stripped = regex?.stringByReplacingMatches(
@@ -102,7 +103,7 @@ enum SetupHelper {
 
               需要在 statusline 命令中加入 tee，将数据写入本地文件，本应用才能读取百分比。
 
-              将修改 ~/.claude/settings.json：
+              将修改 \(AppPaths.displayPath(settingsFile))：
               · 自动备份到 settings.json.bak-{时间戳}
               · 仅添加 tee 命令，保留所有其他配置
               """
@@ -111,7 +112,7 @@ enum SetupHelper {
 
               This app needs to add a tee command to your statusline config so it can read the percentages.
 
-              Will modify ~/.claude/settings.json:
+              Will modify \(AppPaths.displayPath(settingsFile)):
               · Auto-backup to settings.json.bak-{timestamp}
               · Only adds a tee command; all other settings preserved
               """
@@ -203,7 +204,7 @@ enum SetupHelper {
 
         if let sl = json["statusLine"] as? [String: Any],
            let cmd = sl["command"] as? String {
-            if cmd.contains(teeFragment) { return .success }
+            if cmd.contains("tee"), cmd.contains("usage-rate.json") { return .success }
             var newSl = sl  // preserve unknown keys
             newSl["command"] = "\(teeFragment) | \(cmd)"
             json["statusLine"] = newSl
@@ -264,13 +265,13 @@ enum SetupHelper {
         case .unexpectedFormat:  why = S.zh ? "statusLine 字段格式与预期不符" : "statusLine field has unexpected format"
         }
 
-        let snippet = "\"statusLine\": {\n  \"type\": \"command\",\n  \"command\": \"tee ~/.claude/usage-rate.json | <your existing command, or omit if none>\"\n}"
+        let snippet = "\"statusLine\": {\n  \"type\": \"command\",\n  \"command\": \"\(teeFragment) | <your existing command, or omit if none>\"\n}"
 
         let alert = NSAlert()
         alert.messageText = S.zh ? "需要手动配置" : "Manual Setup Required"
         alert.informativeText = S.zh
-            ? "无法自动配置（\(why)）。请手动在 ~/.claude/settings.json 中添加：\n\n\(snippet)"
-            : "Auto-setup unavailable (\(why)). Please add this to ~/.claude/settings.json manually:\n\n\(snippet)"
+            ? "无法自动配置（\(why)）。请手动在 \(AppPaths.displayPath(settingsFile)) 中添加：\n\n\(snippet)"
+            : "Auto-setup unavailable (\(why)). Please add this to \(AppPaths.displayPath(settingsFile)) manually:\n\n\(snippet)"
         alert.alertStyle = .warning
         alert.addButton(withTitle: "OK")
         alert.runModal()

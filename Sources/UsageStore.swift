@@ -67,13 +67,14 @@ final class UsageStore: ObservableObject {
 
     private var timer: Timer?
     private var rateTimer: Timer?
-    private let projectsDir: URL
+    private let claudeProjectsDirProvider: () -> URL
     private let now: Clock
     private let claudeRateReader: RateReader
     private let claudeRateStatusReader: () -> ClaudeRateStatus
     private let codexRateReader: RateReader
     private let codexEntriesReader: CodexEntriesReader
     private let pricingLoader: PricingLoader
+    private var defaultsObserver: NSObjectProtocol?
 
     // File cache lives on the main thread; captured into Stage 2 by value,
     // written back on main when Stage 2 completes. `stage2InFlight` prevents
@@ -85,6 +86,9 @@ final class UsageStore: ObservableObject {
     private var stage2InFlight = false
     private var ccSignature = CollectionSignature.empty
     private var cxSignature = CollectionSignature.empty
+    private var observedClaudeRoot = AppPaths.claudeRoot
+    private var observedCodexRoot = AppPaths.codexRoot
+    private var loadGeneration = 0
 
     private(set) var lastTokenLoadStats: TokenLoadStats = .zero
 
@@ -100,8 +104,7 @@ final class UsageStore: ObservableObject {
     }()
 
     init(
-        projectsDir: URL = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".claude/projects"),
+        projectsDir: URL? = nil,
         autoload: Bool = true,
         autoRefresh: Bool = true,
         refreshInterval: TimeInterval = 15,
@@ -113,13 +116,20 @@ final class UsageStore: ObservableObject {
         codexEntriesReader: @escaping CodexEntriesReader = CodexReader.readEntries,
         pricingLoader: @escaping PricingLoader = Pricing.loadFromLiteLLM
     ) {
-        self.projectsDir = projectsDir
+        self.claudeProjectsDirProvider = { projectsDir ?? AppPaths.claudeProjectsDir }
         self.now = now
         self.claudeRateReader = claudeRateReader
         self.claudeRateStatusReader = claudeRateStatusReader
         self.codexRateReader = codexRateReader
         self.codexEntriesReader = codexEntriesReader
         self.pricingLoader = pricingLoader
+        self.defaultsObserver = NotificationCenter.default.addObserver(
+            forName: UserDefaults.didChangeNotification,
+            object: UserDefaults.standard,
+            queue: .main
+        ) { [weak self] _ in
+            self?.reloadIfPathsChanged()
+        }
 
         if autoload {
             loadAsync()
@@ -137,14 +147,23 @@ final class UsageStore: ObservableObject {
         }
     }
 
-    deinit { timer?.invalidate(); rateTimer?.invalidate() }
+    deinit {
+        timer?.invalidate()
+        rateTimer?.invalidate()
+        if let defaultsObserver {
+            NotificationCenter.default.removeObserver(defaultsObserver)
+        }
+    }
 
     // MARK: - Installed detection
 
-    static let claudeInstalled = FileManager.default.fileExists(
-        atPath: FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude").path)
-    static let codexInstalled = FileManager.default.fileExists(
-        atPath: FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex").path)
+    static var claudeInstalled: Bool {
+        FileManager.default.fileExists(atPath: AppPaths.claudeRoot.path)
+    }
+
+    static var codexInstalled: Bool {
+        FileManager.default.fileExists(atPath: AppPaths.codexRoot.path)
+    }
 
     // MARK: - Menu bar
 
@@ -160,6 +179,10 @@ final class UsageStore: ObservableObject {
     }
 
     // MARK: - Claude detail data
+
+    private static func isSyntheticClaudeModel(_ model: String) -> Bool {
+        model.trimmingCharacters(in: .whitespacesAndNewlines) == "<synthetic>"
+    }
 
     var ccToday: DailyUsage {
         let today = Calendar.current.startOfDay(for: now())
@@ -180,7 +203,9 @@ final class UsageStore: ObservableObject {
 
     var ccModels: [ModelUsage] {
         let today = Calendar.current.startOfDay(for: now())
-        let todayEntries = ccEntries.filter { $0.timestamp >= today }
+        let todayEntries = ccEntries.filter {
+            $0.timestamp >= today && !Self.isSyntheticClaudeModel($0.model)
+        }
         // Group by the FULL model name so distinct snapshots stay separate
         let grouped = Dictionary(grouping: todayEntries) { $0.model }
         return grouped.map { ModelUsage(id: $0.key, model: $0.key, entries: $0.value) }
@@ -250,11 +275,17 @@ final class UsageStore: ObservableObject {
         guard !stage2InFlight else { return }
         stage2InFlight = true
         let snapshot = self.fileCache  // capture on main thread
+        let generation = loadGeneration
 
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self else { return }
             let result = self.loadTokenData(snapshot: snapshot)
             DispatchQueue.main.async {
+                guard generation == self.loadGeneration else {
+                    self.stage2InFlight = false
+                    self.loadAsync()
+                    return
+                }
                 self.applyTokenData(result)
                 self.stage2InFlight = false
             }
@@ -265,10 +296,16 @@ final class UsageStore: ObservableObject {
     private func loadRateLimitsAsync() {
         guard !stage1InFlight else { return }
         stage1InFlight = true
+        let generation = loadGeneration
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }
             let rates = self.loadRateLimits()
             DispatchQueue.main.async {
+                guard generation == self.loadGeneration else {
+                    self.stage1InFlight = false
+                    self.loadRateLimitsAsync()
+                    return
+                }
                 self.applyRateLimits(claude: rates.claude, claudeStatus: rates.claudeStatus, codex: rates.codex)
                 self.stage1InFlight = false
             }
@@ -277,6 +314,26 @@ final class UsageStore: ObservableObject {
 
     private func loadRateLimits() -> (claude: RateLimit?, claudeStatus: ClaudeRateStatus, codex: RateLimit?) {
         (claudeRateReader(), claudeRateStatusReader(), codexRateReader())
+    }
+
+    private func reloadIfPathsChanged() {
+        let claudeRoot = AppPaths.claudeRoot
+        let codexRoot = AppPaths.codexRoot
+        guard claudeRoot != observedClaudeRoot || codexRoot != observedCodexRoot else { return }
+
+        loadGeneration += 1
+        observedClaudeRoot = claudeRoot
+        observedCodexRoot = codexRoot
+        fileCache = [:]
+        ccSignature = .empty
+        cxSignature = .empty
+        claudeRate = nil
+        codexRate = nil
+        claudeRateStatus = .waitingForSessionData
+        ccEntries = []
+        cxEntries = []
+        isLoading = true
+        loadAsync()
     }
 
     private func applyRateLimits(claude: RateLimit?, claudeStatus: ClaudeRateStatus, codex: RateLimit?) {
@@ -353,6 +410,7 @@ final class UsageStore: ObservableObject {
         var seen = Set<String>()
         var newCache: [String: CachedFile] = [:]
         var stats = TokenLoadStats.zero
+        let projectsDir = claudeProjectsDirProvider()
 
         guard let enumerator = FileManager.default.enumerator(
             at: projectsDir, includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey],

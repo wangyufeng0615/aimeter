@@ -31,6 +31,11 @@ enum S {
             ? "在 Claude Code 里发一条消息即可显示 5H / 7D 限额"
             : "Send a message in Claude Code to populate 5H / 7D limits."
     }
+    static var codexRateWaiting: String {
+        zh
+            ? "在 Codex 里发一条消息即可显示 rate limit"
+            : "Send a message in Codex to populate rate limits."
+    }
     static var claudeRateUnavailable: String {
         zh
             ? "当前账号未返回 5H / 7D 限额数据（可能非订阅账号）"

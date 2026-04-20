@@ -39,8 +39,7 @@ enum CodexReader {
         let totalTokens: Int
     }
 
-    private static let sessionsDir = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent(".codex/sessions")
+    private static var defaultSessionsDir: URL { AppPaths.codexSessionsDir }
 
     /// Hard cap matching UsageStore.maxFileBytes — skip pathological session
     /// files rather than risk OOM when accumulating the decode buffer.
@@ -62,7 +61,7 @@ enum CodexReader {
     /// Returns `nil` on parse/enumeration failure so the caller can keep the
     /// previous snapshot instead of flickering the UI to empty.
     static func readEntries(since cutoff: Date) -> [UsageEntry]? {
-        readEntries(since: cutoff, sessionsDir: sessionsDir)
+        readEntries(since: cutoff, sessionsDir: defaultSessionsDir)
     }
 
     static func readEntries(since cutoff: Date, sessionsDir: URL) -> [UsageEntry]? {

@@ -20,7 +20,7 @@ struct AIMeterApp: App {
         } label: {
             if store.showCodex && UsageStore.claudeInstalled,
                let image = imageCache.image(
-                   top: "Claude Code \(Int(store.claudePct))%",
+                   top: "Claude \(Int(store.claudePct))%",
                    bottom: "Codex \(Int(store.codexPct))%"
                ) {
                 Image(nsImage: image)
