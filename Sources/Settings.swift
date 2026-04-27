@@ -9,6 +9,8 @@ struct SettingsView: View {
     @State private var hookInstalled = SetupHelper.isHookInstalled()
     @State private var claudeRootDraft = AppPaths.defaultClaudeRootPath
     @State private var codexRootDraft = AppPaths.defaultCodexRootPath
+    @State private var launchAtLoginError: String?
+    @State private var suppressLaunchAtLoginChange = false
 
     private var version: String {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
@@ -55,7 +57,19 @@ struct SettingsView: View {
 
             Section(header: sectionHeader(S.zh ? "通用" : "General")) {
                 Toggle(S.zh ? "开机自动启动" : "Launch at login", isOn: $launchAtLogin)
-                    .onChange(of: launchAtLogin) { _, new in applyLaunchAtLogin(new) }
+                    .onChange(of: launchAtLogin) { _, new in
+                        if suppressLaunchAtLoginChange {
+                            suppressLaunchAtLoginChange = false
+                            return
+                        }
+                        applyLaunchAtLogin(new)
+                    }
+                if let launchAtLoginError {
+                    Text(launchAtLoginError)
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(Color.statusDanger)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
 
                 Picker(S.zh ? "语言" : "Language", selection: $language) {
                     Text(S.zh ? "跟随系统" : "Follow system").tag(Language.auto.rawValue)
@@ -169,6 +183,7 @@ struct SettingsView: View {
             claudeRootDraft = storedClaudeRoot
             codexRootDraft = storedCodexRoot
             hookInstalled = SetupHelper.isHookInstalled()
+            syncLaunchAtLoginState()
         }
         .background(WindowConfig { window in
             // Hide minimize/zoom; keep only the red close button
@@ -203,9 +218,20 @@ struct SettingsView: View {
             } else {
                 try SMAppService.mainApp.unregister()
             }
+            launchAtLoginError = nil
         } catch {
-            // Silent — user can re-toggle
+            launchAtLoginError = S.zh
+                ? "开机启动设置失败：\(error.localizedDescription)"
+                : "Launch at login failed: \(error.localizedDescription)"
+            syncLaunchAtLoginState()
         }
+    }
+
+    private func syncLaunchAtLoginState() {
+        let enabled = SMAppService.mainApp.status == .enabled
+        guard launchAtLogin != enabled else { return }
+        suppressLaunchAtLoginChange = true
+        launchAtLogin = enabled
     }
 
     private func saveClaudeRoot() {

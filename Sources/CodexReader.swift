@@ -39,11 +39,36 @@ enum CodexReader {
         let totalTokens: Int
     }
 
+    private struct ParserState {
+        var sessionID: String
+        var currentModel: String?
+        var previousTotal: RawUsage?
+        var sequence: Int
+    }
+
+    private struct ParsedSession {
+        let entries: [UsageEntry]
+        let state: ParserState
+        let trailingData: Data
+    }
+
+    private struct CachedSessionFile {
+        let mod: Date
+        let size: Int
+        let fileID: UInt64?
+        let entries: [UsageEntry]
+        let state: ParserState
+        let trailingData: Data
+    }
+
     private static var defaultSessionsDir: URL { AppPaths.codexSessionsDir }
 
     /// Hard cap matching UsageStore.maxFileBytes — skip pathological session
     /// files rather than risk OOM when accumulating the decode buffer.
     private static let maxFileBytes: Int = 64 * 1024 * 1024
+
+    private static let cacheLock = NSLock()
+    private static var fileCacheBySessionsDir: [String: [String: CachedSessionFile]] = [:]
 
     private static let isoFull: ISO8601DateFormatter = {
         let f = ISO8601DateFormatter()
@@ -69,27 +94,93 @@ enum CodexReader {
 
         guard let enumerator = FileManager.default.enumerator(
             at: sessionsDir,
-            includingPropertiesForKeys: [.contentModificationDateKey],
+            includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey],
             options: [.skipsHiddenFiles]
         ) else {
             return nil
         }
 
+        let cacheKey = sessionsDir.standardizedFileURL.path
+        let cacheSnapshot = cachedFiles(for: cacheKey)
+        var newCache: [String: CachedSessionFile] = [:]
         var results: [UsageEntry] = []
 
         while let url = enumerator.nextObject() as? URL {
             guard url.pathExtension == "jsonl" else { continue }
 
-            let mod = try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
-            if let mod, mod < cutoff {
+            guard let values = try? url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey]),
+                  let mod = values.contentModificationDate,
+                  let size = values.fileSize
+            else {
+                return nil
+            }
+
+            if mod < cutoff {
+                continue
+            }
+            if size > maxFileBytes {
                 continue
             }
 
-            guard let fileEntries = parseSessionFile(url, cutoff: cutoff) else {
-                return nil
+            let path = url.path
+            let fileID = fileID(for: url)
+            let cached = cacheSnapshot[path]
+
+            if let cached,
+               cached.mod == mod,
+               cached.size == size,
+               cached.fileID == fileID {
+                let entries = cached.entries.filter { $0.timestamp >= cutoff }
+                newCache[path] = CachedSessionFile(
+                    mod: cached.mod,
+                    size: cached.size,
+                    fileID: cached.fileID,
+                    entries: entries,
+                    state: cached.state,
+                    trailingData: cached.trailingData
+                )
+                results.append(contentsOf: entries)
+                continue
             }
-            results.append(contentsOf: fileEntries)
+
+            let parsed: ParsedSession
+            let entries: [UsageEntry]
+
+            if let cached,
+               cached.fileID != nil,
+               cached.fileID == fileID,
+               size > cached.size {
+                guard let incremental = parseSessionFile(
+                    url,
+                    cutoff: cutoff,
+                    fromOffset: cached.size,
+                    carryover: cached.trailingData,
+                    initialState: cached.state
+                ) else {
+                    return nil
+                }
+                parsed = incremental
+                entries = (cached.entries + incremental.entries).filter { $0.timestamp >= cutoff }
+            } else {
+                guard let full = parseSessionFile(url, cutoff: cutoff) else {
+                    return nil
+                }
+                parsed = full
+                entries = full.entries.filter { $0.timestamp >= cutoff }
+            }
+
+            newCache[path] = CachedSessionFile(
+                mod: mod,
+                size: size,
+                fileID: fileID,
+                entries: entries,
+                state: parsed.state,
+                trailingData: parsed.trailingData
+            )
+            results.append(contentsOf: entries)
         }
+
+        storeCachedFiles(newCache, for: cacheKey)
 
         return results.sorted { lhs, rhs in
             if lhs.timestamp == rhs.timestamp { return lhs.id < rhs.id }
@@ -97,22 +188,27 @@ enum CodexReader {
         }
     }
 
-    private static func parseSessionFile(_ url: URL, cutoff: Date) -> [UsageEntry]? {
+    private static func parseSessionFile(
+        _ url: URL,
+        cutoff: Date,
+        fromOffset offset: Int = 0,
+        carryover: Data = Data(),
+        initialState: ParserState? = nil
+    ) -> ParsedSession? {
         if let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize,
            size > maxFileBytes {
-            // Skip oversized sessions silently — returning an empty array
-            // (not nil) signals a non-error skip so the caller keeps
-            // processing other files.
-            return []
+            return ParsedSession(
+                entries: [],
+                state: initialState ?? initialStateFor(url),
+                trailingData: Data()
+            )
         }
         guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
         defer { try? handle.close() }
+        handle.seek(toFileOffset: UInt64(offset))
 
-        var buffer = Data()
-        var sessionID = url.deletingPathExtension().lastPathComponent
-        var currentModel: String?
-        var previousTotal: RawUsage?
-        var sequence = 0
+        var buffer = carryover
+        var state = initialState ?? initialStateFor(url)
         var entries: [UsageEntry] = []
 
         while let chunk = try? handle.read(upToCount: 64 * 1024), !chunk.isEmpty {
@@ -120,36 +216,22 @@ enum CodexReader {
             drainLines(
                 from: &buffer,
                 cutoff: cutoff,
-                sessionID: &sessionID,
-                currentModel: &currentModel,
-                previousTotal: &previousTotal,
-                sequence: &sequence,
+                state: &state,
                 into: &entries
             )
         }
-
-        if !buffer.isEmpty {
-            drainLine(
-                String(decoding: buffer, as: UTF8.self),
-                cutoff: cutoff,
-                sessionID: &sessionID,
-                currentModel: &currentModel,
-                previousTotal: &previousTotal,
-                sequence: &sequence,
-                into: &entries
-            )
+        if !buffer.isEmpty,
+           drainLine(String(decoding: buffer, as: UTF8.self), cutoff: cutoff, state: &state, into: &entries) {
+            buffer.removeAll(keepingCapacity: false)
         }
 
-        return entries
+        return ParsedSession(entries: entries, state: state, trailingData: buffer)
     }
 
     private static func drainLines(
         from buffer: inout Data,
         cutoff: Date,
-        sessionID: inout String,
-        currentModel: inout String?,
-        previousTotal: inout RawUsage?,
-        sequence: inout Int,
+        state: inout ParserState,
         into entries: inout [UsageEntry]
     ) {
         var nextStart = buffer.startIndex
@@ -158,13 +240,10 @@ enum CodexReader {
               let newline = buffer[nextStart...].firstIndex(of: 0x0A) {
             let lineData = buffer[nextStart..<newline]
             nextStart = buffer.index(after: newline)
-            drainLine(
+            _ = drainLine(
                 String(decoding: lineData, as: UTF8.self),
                 cutoff: cutoff,
-                sessionID: &sessionID,
-                currentModel: &currentModel,
-                previousTotal: &previousTotal,
-                sequence: &sequence,
+                state: &state,
                 into: &entries
             )
         }
@@ -177,39 +256,34 @@ enum CodexReader {
     private static func drainLine(
         _ line: String,
         cutoff: Date,
-        sessionID: inout String,
-        currentModel: inout String?,
-        previousTotal: inout RawUsage?,
-        sequence: inout Int,
+        state: inout ParserState,
         into entries: inout [UsageEntry]
-    ) {
+    ) -> Bool {
         guard let data = line.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let type = json["type"] as? String
-        else { return }
+        else { return false }
 
         let payload = json["payload"] as? [String: Any] ?? [:]
 
         if type == "session_meta", let id = payload["id"] as? String, !id.isEmpty {
-            sessionID = id
-            return
+            state.sessionID = id
+            return true
         }
 
         if type == "turn_context", let model = payload["model"] as? String, !model.isEmpty {
-            currentModel = model
-            return
+            state.currentModel = model
+            return true
         }
 
         guard type == "event_msg",
               payload["type"] as? String == "token_count",
               let timestampText = json["timestamp"] as? String,
               let timestamp = parseDate(timestampText)
-        else { return }
-
-        guard timestamp >= cutoff else { return }
+        else { return true }
 
         if let model = extractModel(from: payload) {
-            currentModel = model
+            state.currentModel = model
         }
 
         let info = payload["info"] as? [String: Any] ?? [:]
@@ -219,25 +293,26 @@ enum CodexReader {
         if let lastRaw = normalizeUsage(info["last_token_usage"]) {
             deltaRaw = lastRaw
         } else if let totalRaw {
-            deltaRaw = subtractUsage(current: totalRaw, previous: previousTotal)
+            deltaRaw = subtractUsage(current: totalRaw, previous: state.previousTotal)
         } else {
             deltaRaw = nil
         }
 
         if let totalRaw {
-            previousTotal = totalRaw
+            state.previousTotal = totalRaw
         }
 
+        guard timestamp >= cutoff else { return true }
         guard let deltaRaw,
-              let model = currentModel,
+              let model = state.currentModel,
               deltaRaw.totalTokens > 0
-        else { return }
+        else { return true }
 
-        sequence += 1
+        state.sequence += 1
         entries.append(
             UsageEntry(
-                id: "\(sessionID):\(sequence)",
-                sessionID: sessionID,
+                id: "\(state.sessionID):\(state.sequence)",
+                sessionID: state.sessionID,
                 timestamp: timestamp,
                 model: model,
                 inputTokens: deltaRaw.inputTokens,
@@ -247,6 +322,36 @@ enum CodexReader {
                 totalTokens: deltaRaw.totalTokens
             )
         )
+        return true
+    }
+
+    private static func cachedFiles(for key: String) -> [String: CachedSessionFile] {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        return fileCacheBySessionsDir[key] ?? [:]
+    }
+
+    private static func storeCachedFiles(_ files: [String: CachedSessionFile], for key: String) {
+        cacheLock.lock()
+        fileCacheBySessionsDir[key] = files
+        cacheLock.unlock()
+    }
+
+    private static func initialStateFor(_ url: URL) -> ParserState {
+        ParserState(
+            sessionID: url.deletingPathExtension().lastPathComponent,
+            currentModel: nil,
+            previousTotal: nil,
+            sequence: 0
+        )
+    }
+
+    private static func fileID(for url: URL) -> UInt64? {
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let raw = attrs[.systemFileNumber] as? NSNumber else {
+            return nil
+        }
+        return raw.uint64Value
     }
 
     private static func normalizeUsage(_ raw: Any?) -> RawUsage? {

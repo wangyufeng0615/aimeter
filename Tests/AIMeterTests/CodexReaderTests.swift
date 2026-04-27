@@ -87,6 +87,106 @@ final class CodexReaderTests: XCTestCase {
         XCTAssertEqual(entries.map(\.outputTokens), [10, 5])
     }
 
+    func testReadEntriesUsesPreCutoffTotalForFirstVisibleDelta() throws {
+        let sessionsDir = try makeSessionsDir()
+        let file = sessionsDir.appendingPathComponent("2026/04/14/rollout-c.jsonl")
+        let start = Date(timeIntervalSince1970: 1_776_150_200)
+        let cutoff = start.addingTimeInterval(2)
+
+        try write([
+            try jsonLine([
+                "timestamp": iso(start),
+                "type": "session_meta",
+                "payload": ["id": "session-c"],
+            ]),
+            try jsonLine([
+                "timestamp": iso(start),
+                "type": "turn_context",
+                "payload": ["model": "gpt-5.4"],
+            ]),
+            try tokenCountLine(
+                timestamp: start.addingTimeInterval(1),
+                total: ["input_tokens": 100, "cached_input_tokens": 20, "output_tokens": 10, "reasoning_output_tokens": 0, "total_tokens": 110]
+            ),
+            try tokenCountLine(
+                timestamp: start.addingTimeInterval(3),
+                total: ["input_tokens": 180, "cached_input_tokens": 60, "output_tokens": 15, "reasoning_output_tokens": 0, "total_tokens": 195]
+            ),
+        ].joined(separator: "\n") + "\n", to: file)
+
+        let entries = try XCTUnwrap(CodexReader.readEntries(since: cutoff, sessionsDir: sessionsDir))
+        XCTAssertEqual(entries.count, 1)
+        XCTAssertEqual(entries[0].totalTokens, 85)
+        XCTAssertEqual(entries[0].inputTokens, 80)
+        XCTAssertEqual(entries[0].cachedInputTokens, 40)
+        XCTAssertEqual(entries[0].outputTokens, 5)
+    }
+
+    func testReadEntriesKeepsParserStateAcrossAppends() throws {
+        let sessionsDir = try makeSessionsDir()
+        let file = sessionsDir.appendingPathComponent("2026/04/14/rollout-d.jsonl")
+        let start = Date(timeIntervalSince1970: 1_776_150_300)
+
+        try write([
+            try jsonLine([
+                "timestamp": iso(start),
+                "type": "session_meta",
+                "payload": ["id": "session-d"],
+            ]),
+            try jsonLine([
+                "timestamp": iso(start),
+                "type": "turn_context",
+                "payload": ["model": "gpt-5.4"],
+            ]),
+            try tokenCountLine(
+                timestamp: start.addingTimeInterval(1),
+                total: ["input_tokens": 100, "cached_input_tokens": 20, "output_tokens": 10, "reasoning_output_tokens": 0, "total_tokens": 110]
+            ),
+        ].joined(separator: "\n") + "\n", to: file)
+
+        _ = try XCTUnwrap(CodexReader.readEntries(since: start, sessionsDir: sessionsDir))
+
+        try append(
+            try tokenCountLine(
+                timestamp: start.addingTimeInterval(2),
+                total: ["input_tokens": 180, "cached_input_tokens": 60, "output_tokens": 15, "reasoning_output_tokens": 0, "total_tokens": 195]
+            ) + "\n",
+            to: file
+        )
+
+        let entries = try XCTUnwrap(CodexReader.readEntries(since: start, sessionsDir: sessionsDir))
+        XCTAssertEqual(entries.map(\.totalTokens), [110, 85])
+        XCTAssertEqual(entries.map(\.inputTokens), [100, 80])
+    }
+
+    func testReadEntriesParsesCompleteFinalLineWithoutTrailingNewline() throws {
+        let sessionsDir = try makeSessionsDir()
+        let file = sessionsDir.appendingPathComponent("2026/04/14/rollout-e.jsonl")
+        let start = Date(timeIntervalSince1970: 1_776_150_400)
+
+        try write([
+            try jsonLine([
+                "timestamp": iso(start),
+                "type": "session_meta",
+                "payload": ["id": "session-e"],
+            ]),
+            try jsonLine([
+                "timestamp": iso(start),
+                "type": "turn_context",
+                "payload": ["model": "gpt-5.4"],
+            ]),
+            try tokenCountLine(
+                timestamp: start.addingTimeInterval(1),
+                total: ["input_tokens": 100, "cached_input_tokens": 20, "output_tokens": 10, "reasoning_output_tokens": 0, "total_tokens": 110]
+            ),
+        ].joined(separator: "\n"), to: file)
+
+        let entries = try XCTUnwrap(CodexReader.readEntries(since: start, sessionsDir: sessionsDir))
+        XCTAssertEqual(entries.count, 1)
+        XCTAssertEqual(entries[0].totalTokens, 110)
+        XCTAssertEqual(entries[0].sessionID, "session-e")
+    }
+
     private func makeSessionsDir() throws -> URL {
         let dir = tempDir.appendingPathComponent("sessions", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -100,6 +200,20 @@ final class CodexReaderTests: XCTestCase {
             return
         }
         try data.write(to: url)
+    }
+
+    private func append(_ text: String, to url: URL) throws {
+        guard let data = text.data(using: .utf8) else {
+            XCTFail("failed to encode UTF-8 text")
+            return
+        }
+        guard let handle = try? FileHandle(forWritingTo: url) else {
+            XCTFail("expected file at \(url.path)")
+            return
+        }
+        defer { try? handle.close() }
+        handle.seekToEndOfFile()
+        try handle.write(contentsOf: data)
     }
 
     private func jsonLine(_ object: [String: Any]) throws -> String {

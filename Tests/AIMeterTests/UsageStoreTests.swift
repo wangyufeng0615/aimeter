@@ -78,6 +78,30 @@ final class UsageStoreTests: XCTestCase {
     }
 
     @MainActor
+    func testCachedClaudeEntriesArePrunedWhenTheyAgeOut() throws {
+        let projectsDir = try makeProjectsDir()
+        let logFile = projectsDir.appendingPathComponent("session.jsonl")
+        let base = Date(timeIntervalSince1970: 1_776_150_150)
+        var currentDate = base
+
+        try write([
+            try usageLine(messageID: "old", requestID: "r1", timestamp: base.addingTimeInterval(-6 * 86400), input: 10),
+            try usageLine(messageID: "new", requestID: "r2", timestamp: base, input: 20),
+        ].joined(separator: "\n") + "\n", to: logFile)
+        try setModificationDate(base, for: logFile)
+
+        let store = makeStore(projectsDir: projectsDir, nowProvider: { currentDate })
+        store.refreshSynchronouslyForTesting()
+        XCTAssertEqual(store.ccEntries.map(\.id), ["old:r1", "new:r2"])
+
+        currentDate = base.addingTimeInterval(2 * 86400)
+        store.refreshSynchronouslyForTesting()
+
+        XCTAssertEqual(store.ccEntries.map(\.id), ["new:r2"])
+        XCTAssertEqual(store.lastTokenLoadStats.reusedFiles, 1)
+    }
+
+    @MainActor
     func testUnchangedRefreshDoesNotRepublishObjectWillChange() throws {
         let projectsDir = try makeProjectsDir()
         let logFile = projectsDir.appendingPathComponent("session.jsonl")
@@ -129,6 +153,39 @@ final class UsageStoreTests: XCTestCase {
     }
 
     @MainActor
+    func testRefreshReadsClaudeRateSnapshotOnce() throws {
+        let projectsDir = try makeProjectsDir()
+        let now = Date(timeIntervalSince1970: 1_776_150_250)
+        let rate = RateLimit(
+            fiveHourPct: 12,
+            sevenDayPct: 34,
+            fiveHourResetsAt: now.addingTimeInterval(3600),
+            updatedAt: now
+        )
+        var calls = 0
+
+        let store = UsageStore(
+            projectsDir: projectsDir,
+            autoload: false,
+            autoRefresh: false,
+            now: { now },
+            claudeRateSnapshotReader: {
+                calls += 1
+                return (rate, .available)
+            },
+            codexRateReader: { nil },
+            codexEntriesReader: { _ in [] },
+            pricingLoader: {}
+        )
+
+        store.refreshSynchronouslyForTesting()
+
+        XCTAssertEqual(calls, 1)
+        XCTAssertEqual(store.claudeRate, rate)
+        XCTAssertEqual(store.claudeRateStatus, .available)
+    }
+
+    @MainActor
     func testRewrittenFileFallsBackToFullParse() throws {
         let projectsDir = try makeProjectsDir()
         let logFile = projectsDir.appendingPathComponent("session.jsonl")
@@ -176,12 +233,29 @@ final class UsageStoreTests: XCTestCase {
         codexRate: RateLimit? = nil,
         codexEntries: [CodexReader.UsageEntry]? = []
     ) -> UsageStore {
+        makeStore(
+            projectsDir: projectsDir,
+            nowProvider: { now },
+            claudeRate: claudeRate,
+            codexRate: codexRate,
+            codexEntries: codexEntries
+        )
+    }
+
+    private func makeStore(
+        projectsDir: URL,
+        nowProvider: @escaping UsageStore.Clock,
+        claudeRate: RateLimit? = nil,
+        codexRate: RateLimit? = nil,
+        codexEntries: [CodexReader.UsageEntry]? = []
+    ) -> UsageStore {
         UsageStore(
             projectsDir: projectsDir,
             autoload: false,
             autoRefresh: false,
-            now: { now },
+            now: nowProvider,
             claudeRateReader: { claudeRate },
+            claudeRateStatusReader: { claudeRate == nil ? .waitingForSessionData : .available },
             codexRateReader: { codexRate },
             codexEntriesReader: { _ in codexEntries },
             pricingLoader: {}
@@ -207,6 +281,10 @@ final class UsageStoreTests: XCTestCase {
         defer { try? handle.close() }
         handle.seekToEndOfFile()
         try handle.write(contentsOf: text.data(using: .utf8).unwrap())
+    }
+
+    private func setModificationDate(_ date: Date, for url: URL) throws {
+        try FileManager.default.setAttributes([.modificationDate: date], ofItemAtPath: url.path)
     }
 
     private func usageLine(

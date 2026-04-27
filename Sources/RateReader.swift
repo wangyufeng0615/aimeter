@@ -136,11 +136,20 @@ enum ClaudeRateReader {
 // MARK: - Codex rate limits (from session JSONL)
 
 enum CodexRateReader {
+    /// Cache the "latest rollout" path so we stop stat-ing every file in
+    /// ~/.codex/sessions on each poll. The active session keeps the same URL
+    /// for its whole lifetime; a full rescan every `fullScanInterval` catches
+    /// the case where the user starts a brand-new session.
+    private static let cacheLock = NSLock()
+    private static var cachedLatestURL: URL?
+    private static var lastFullScanAt: Date?
+    private static let fullScanInterval: TimeInterval = 60
+
     static func read() -> RateLimit? {
         let sessionsDir = AppPaths.codexSessionsDir
         guard FileManager.default.fileExists(atPath: sessionsDir.path) else { return nil }
 
-        guard let latest = findLatestRollout(in: sessionsDir) else { return nil }
+        guard let latest = latestRollout(in: sessionsDir, now: Date()) else { return nil }
 
         // Read tail of file (last 100KB) for efficiency
         guard let handle = try? FileHandle(forReadingFrom: latest) else { return nil }
@@ -187,6 +196,25 @@ enum CodexRateReader {
 
         return RateLimit(fiveHourPct: pct, sevenDayPct: secondary,
                          fiveHourResetsAt: resetsAt, updatedAt: modDate)
+    }
+
+    private static func latestRollout(in dir: URL, now: Date) -> URL? {
+        cacheLock.lock()
+        let cached = cachedLatestURL
+        let lastScan = lastFullScanAt
+        cacheLock.unlock()
+
+        let cacheFresh = lastScan.map { now.timeIntervalSince($0) < fullScanInterval } ?? false
+        if cacheFresh, let cached, FileManager.default.fileExists(atPath: cached.path) {
+            return cached
+        }
+
+        let found = findLatestRollout(in: dir)
+        cacheLock.lock()
+        cachedLatestURL = found
+        lastFullScanAt = now
+        cacheLock.unlock()
+        return found
     }
 
     private static func findLatestRollout(in dir: URL) -> URL? {

@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.3.2] - 2026-04-27
+
+### Changed
+- Reduced steady-state CPU work by caching Codex session parsing, pruning stale Claude cache entries, and moving daily/weekly UI aggregation into the background token refresh.
+- Slowed rate-limit polling to 5 seconds with timer tolerance so the menu bar app wakes the CPU less aggressively.
+
+### Fixed
+- Parse final JSONL records even when a Codex rollout file does not end with a trailing newline.
+- Avoid reading the Claude statusline snapshot twice during each rate-limit refresh.
+- Keep the Launch at Login setting synchronized with macOS and show an inline error if ServiceManagement registration fails.
+
 ## [0.3.1] - 2026-04-20
 
 ### Added

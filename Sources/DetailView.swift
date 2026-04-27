@@ -220,23 +220,22 @@ struct DetailView: View {
                 Spacer()
             }
 
-            let models = allModels()
-            let totalTokens = models.reduce(0) { $0 + $1.tokens }
-            let totalCost = models.reduce(0.0) { $0 + $1.cost }
+            let today = store.usageSummary.today
+            let models = today.models
 
             HStack(spacing: 0) {
-                StatCell(value: fmtTokens(totalTokens), label: S.tokens)
+                StatCell(value: fmtTokens(today.tokens), label: S.tokens)
                 dot
-                StatCell(value: fmtCost(totalCost), label: S.cost)
+                StatCell(value: fmtCost(today.cost), label: S.cost)
                 dot
-                StatCell(value: "\(store.ccToday.messageCount)", label: S.messages)
+                StatCell(value: "\(today.messageCount)", label: S.messages)
             }
             .redacted(reason: isInitialLoad ? .placeholder : [])
 
             if !models.isEmpty {
                 let peak = models.map(\.tokens).max() ?? 1
                 VStack(spacing: 3) {
-                    ForEach(models.prefix(3), id: \.fullName) { m in
+                    ForEach(models.prefix(3)) { m in
                         HStack(spacing: 4) {
                             Text(m.displayName)
                                 .font(Font2.row)
@@ -247,7 +246,7 @@ struct DetailView: View {
                                 .help(m.fullName)  // hover tooltip with full model name
                             GeometryReader { geo in
                                 RoundedRectangle(cornerRadius: 2)
-                                    .fill(m.color.opacity(0.55))
+                                    .fill(modelColor(m).opacity(0.55))
                                     .frame(width: max(2, geo.size.width * CGFloat(m.tokens) / CGFloat(peak)))
                             }.frame(height: 7)
                             Text(fmtTokens(m.tokens))
@@ -283,7 +282,7 @@ struct DetailView: View {
                 Spacer()
             }
 
-            let weekly = store.weekly
+            let weekly = store.usageSummary.weekly
             let peak = max(1, weekly.map(\.tokens).max() ?? 1)
 
             VStack(spacing: 2) {
@@ -324,35 +323,6 @@ struct DetailView: View {
         Circle().fill(Color.primary.opacity(0.06)).frame(width: 3, height: 3)
     }
 
-    private struct ModelEntry: Hashable {
-        let displayName: String   // shown in chart, may be shortened
-        let fullName: String      // shown in tooltip on hover
-        let tokens: Int
-        let cost: Double
-        let color: Color
-        func hash(into h: inout Hasher) { h.combine(fullName) }
-        static func == (l: ModelEntry, r: ModelEntry) -> Bool { l.fullName == r.fullName }
-    }
-
-    private func allModels() -> [ModelEntry] {
-        // Claude: strip "claude-" prefix and date suffix for display, keep full name for tooltip
-        var r: [ModelEntry] = store.ccModels.map {
-            ModelEntry(displayName: Pricing.shortenModelName($0.model),
-                       fullName: $0.model,
-                       tokens: $0.totalTokens, cost: $0.totalCost,
-                       color: modelColor($0.model))
-        }
-        // Codex: show full name; if too long it'll truncate, tooltip shows the rest
-        r += store.cxModels.map {
-            ModelEntry(displayName: $0.model,
-                       fullName: $0.model,
-                       tokens: $0.tokens,
-                       cost: $0.cost,
-                       color: .orange)
-        }
-        return r.sorted { $0.tokens > $1.tokens }
-    }
-
     private func resetMinutesRemaining(until date: Date) -> Int? {
         let remaining = date.timeIntervalSinceNow
         guard remaining > 0 else { return nil }
@@ -364,6 +334,15 @@ struct DetailView: View {
         case ..<50: .statusSafe
         case ..<80: .statusWarn
         default:    .statusDanger
+        }
+    }
+
+    private func modelColor(_ model: UsageStore.ModelBreakdown) -> Color {
+        switch model.source {
+        case .claude:
+            return modelColor(model.fullName)
+        case .codex:
+            return .orange
         }
     }
 
