@@ -19,10 +19,7 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "AIMeter",
-            path: "Sources",
-            linkerSettings: [
-                .linkedLibrary("sqlite3"),
-            ]
+            path: "Sources"
         ),
         .testTarget(
             name: "AIMeterTests",

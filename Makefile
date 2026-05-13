@@ -26,7 +26,7 @@ SPARKLE_FLAGS := -F $(SPARKLE_XCFW)/macos-arm64_x86_64 -framework Sparkle \
                  -Xlinker -rpath -Xlinker @loader_path/../Frameworks
 ZIP_FLAGS := -c -k --sequesterRsrc --keepParent
 
-SWIFTC_BASE := -parse-as-library -O -lsqlite3 $(SPARKLE_FLAGS)
+SWIFTC_BASE := -parse-as-library -O $(SPARKLE_FLAGS)
 ifneq ($(SDK),)
     SWIFTC_BASE += -sdk $(SDK)
 endif

@@ -24,9 +24,10 @@ SwiftUI + AppKit + Sparkle（自动更新）。app 本体用 `swiftc` 通过 Mak
 
 - **数据层**：两个独立来源
   - Claude Code：`~/.claude/projects/**/*.jsonl`（JSONL 对话日志）+ `~/.claude/usage-rate.json`（statusline hook 写入的 rate limit）
-  - Codex：`~/.codex/state_5.sqlite`（线程汇总）+ `~/.codex/sessions/**/rollout-*.jsonl`（session 级 rate limit）
+  - Codex：`~/.codex/sessions/**/rollout-*.jsonl`（`token_count` 使用量增量 + `rate_limits` 百分比）
+- **路径层**：默认读 `~/.claude` / `~/.codex`，Settings 的 Paths 可改根目录；`AppPaths` 统一派生 projects、sessions、settings、rate cache 路径
 - **定价层**：启动时从 LiteLLM GitHub 拉取最新定价，缓存到 `~/Library/Caches/com.aimeter.app/pricing.json`（24h TTL），离线用硬编码默认值
-- **刷新**：rate limit 每 15 秒读一次，JSONL 解析也每 15 秒（有文件级缓存，mod+size 双校验）
+- **刷新**：rate limit 每 5 秒读一次，JSONL/summary 每 15 秒刷新；Timer 都有 10% tolerance。Claude/Codex JSONL 都有 mtime+size+fileID 缓存、增量读取、64MB 单文件上限
 - **自动更新**：Sparkle 内嵌在 `Contents/Frameworks/Sparkle.framework`，每 24h 拉一次 `https://raw.githubusercontent.com/wangyufeng0615/aimeter/main/docs/appcast.xml`；appcast 和 zip 都用 EdDSA 私钥签，app 用 `SUPublicEDKey` 验签
 
 ## 文件说明
@@ -34,13 +35,14 @@ SwiftUI + AppKit + Sparkle（自动更新）。app 本体用 `swiftc` 通过 Mak
 | 文件 | 职责 |
 |------|------|
 | App.swift | 入口，MenuBarExtra + 自定义 label |
+| AppPaths.swift | Claude/Codex 根目录配置和派生路径 |
 | SetupHelper.swift | 首次启动检测 + 自动注入 statusline tee |
 | UsageStore.swift | ObservableObject，两阶段异步加载（Stage 1 rate limit → Stage 2 JSONL） |
-| RateReader.swift | 读 Claude statusline JSON + Codex session JSONL 的 rate_limits |
-| CodexReader.swift | SQLite3 C API 读 Codex threads 表 |
-| Pricing.swift | LiteLLM 定价获取/缓存/阶梯计费 + Codex 混合费率估算 |
+| RateReader.swift | 读 Claude statusline JSON + Codex 最新 session JSONL 的 rate_limits |
+| CodexReader.swift | 解析 Codex session JSONL 的 token_count 增量、模型和费用输入 |
+| Pricing.swift | LiteLLM 定价获取/缓存/阶梯计费 |
 | Models.swift | UsageEntry, DailyUsage, ModelUsage |
-| DetailView.swift | 面板 UI：rate cards, today stats, model chart, weekly chart |
+| DetailView.swift | 面板 UI：rate cards, 当日统计, model chart, weekly chart |
 | Settings.swift | 设置面板 UI：启动项、语言、隐私说明、更新（Sparkle） |
 | Updater.swift | Sparkle 封装：`AppUpdater` + `UpdatesSettingsSection`，全文 `#if canImport(Sparkle)` |
 | Colors.swift | Light/dark 动态颜色 + hex 解析 |
@@ -51,9 +53,9 @@ SwiftUI + AppKit + Sparkle（自动更新）。app 本体用 `swiftc` 通过 Mak
 - **Rate limit 百分比来自服务端**，不本地计算。Claude 通过 statusline hook（`tee` 写文件），Codex 从 session JSONL 的 `token_count` 事件读取。
 - **首次启动自动配置 statusline hook**：避免用户手动改 settings.json，弹一次性对话框获得授权。
 - **费用采用 ccusage 的 auto 模式**：JSONL 有 `costUSD` 字段就用，没有就按 LiteLLM 定价计算。
-- **Codex 费用是估算**：SQLite 只有 `tokens_used` 总量无 input/output 分拆，用 90%/9%/1% 混合费率。
+- **Codex 费用按 session JSONL 的 token 拆分计算**：优先用 `last_token_usage`，缺失时用 `total_token_usage` 和上一条状态做差。
 - **fileCache 线程安全**：主线程快照 → 后台用 inout 副本 → 主线程回写，`stage2InFlight` 防并发。
-- **Codex session 文件用容错 UTF-8 解码**（`String(decoding:as:UTF8.self)`），因为从文件中间读取可能截断多字节字符。
+- **JSONL 增量解析保留 parser state + trailingData**：从文件中间读取可能截断多字节字符，所以用容错 UTF-8 解码；Codex EOF 会 drain 完整 final line，避免无 trailing newline 时丢最后一条。
 - **Sparkle 采用 vendored xcframework**（`Vendor/Sparkle/`，gitignored）而非 SPM 依赖：避免 `swift test` 加载 Sparkle-signed framework 被 Library Validation 挡住，也让 CI/本地构建都不用等 git clone Sparkle 全量历史。
 - **Sparkle 嵌套签名 inside-out**：`Installer.xpc → Downloader.xpc → Autoupdate → Updater.app → framework → main binary → app bundle`。**禁用 `--deep`**（官方明说会破坏 Downloader.xpc entitlements）。Downloader.xpc 单独用 `--preserve-metadata=entitlements` 保留其原生声明。
 
@@ -61,6 +63,7 @@ SwiftUI + AppKit + Sparkle（自动更新）。app 本体用 `swiftc` 通过 Mak
 
 - `Pricing.rates` 用 `NSLock` 保护，因为后台线程写、主线程读
 - `Pricing.loadFromLiteLLM()` 用信号量同步阻塞，但 app 生命周期内只调用一次（`pricingLoaded` 标志）
+- 修改 Claude/Codex 根目录会 bump `loadGeneration`、清空缓存并重新加载，防止旧路径结果回写到新路径 UI
 - 修改 settings.json 用 `.atomic` 写入，防止崩溃留下损坏文件
 - Info.plist 的 `LSUIElement=true` 隐藏 Dock 图标，`LSMinimumSystemVersion=14.0`
 

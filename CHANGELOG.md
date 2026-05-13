@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.3.3] - 2026-05-13
+
+### Changed
+- Clarified documentation around local usage data, the LiteLLM pricing request, custom Claude/Codex roots, and required contributor checks.
+- Updated agent handoff docs to describe Codex session JSONL token-count parsing instead of the old SQLite summary path.
+
+### Fixed
+- Avoid double-counting repeated Codex `last_token_usage` events when cumulative totals do not advance.
+- Add `gpt-5.5` and `gpt-5.5-pro` pricing support so recent Codex sessions are costed with the correct model family.
+- Read Codex rate limits from both top-level and payload JSONL shapes, and scope the latest-rollout cache by Codex sessions directory.
+- Parse complete Claude JSONL final lines even when the file has no trailing newline.
+
+### Removed
+- Removed unused SQLite link flags and stale Codex total-token cost fallback code.
+
 ## [0.3.2] - 2026-04-27
 
 ### Changed

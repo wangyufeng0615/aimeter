@@ -78,6 +78,21 @@ final class UsageStoreTests: XCTestCase {
     }
 
     @MainActor
+    func testClaudeParserReadsCompleteFinalLineWithoutTrailingNewline() throws {
+        let projectsDir = try makeProjectsDir()
+        let logFile = projectsDir.appendingPathComponent("session.jsonl")
+        let now = Date(timeIntervalSince1970: 1_776_150_125)
+
+        try write(try usageLine(messageID: "m1", requestID: "r1", timestamp: now, input: 33), to: logFile)
+
+        let store = makeStore(projectsDir: projectsDir, now: now)
+        store.refreshSynchronouslyForTesting()
+
+        XCTAssertEqual(store.ccEntries.map(\.id), ["m1:r1"])
+        XCTAssertEqual(store.ccEntries[0].totalTokens, 38)
+    }
+
+    @MainActor
     func testCachedClaudeEntriesArePrunedWhenTheyAgeOut() throws {
         let projectsDir = try makeProjectsDir()
         let logFile = projectsDir.appendingPathComponent("session.jsonl")

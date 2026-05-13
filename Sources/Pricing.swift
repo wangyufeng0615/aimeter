@@ -35,6 +35,10 @@ enum Pricing {
                              inputTiered: nil, outputTiered: nil, cacheWriteTiered: nil, cacheReadTiered: nil),
         "gpt-5.4-pro": Rate(input: 30e-6, output: 180e-6, cacheRead: 3e-6, cacheWrite: 30e-6,
                             inputTiered: nil, outputTiered: nil, cacheWriteTiered: nil, cacheReadTiered: nil),
+        "gpt-5.5": Rate(input: 5e-6, output: 30e-6, cacheRead: 0.5e-6, cacheWrite: 5e-6,
+                        inputTiered: nil, outputTiered: nil, cacheWriteTiered: nil, cacheReadTiered: nil),
+        "gpt-5.5-pro": Rate(input: 30e-6, output: 180e-6, cacheRead: 3e-6, cacheWrite: 30e-6,
+                            inputTiered: nil, outputTiered: nil, cacheWriteTiered: nil, cacheReadTiered: nil),
         "gpt-5.3-codex": Rate(input: 1.75e-6, output: 14e-6, cacheRead: 0.175e-6, cacheWrite: 1.75e-6,
                               inputTiered: nil, outputTiered: nil, cacheWriteTiered: nil, cacheReadTiered: nil),
         "gpt-5.2-codex": Rate(input: 1.75e-6, output: 14e-6, cacheRead: 0.175e-6, cacheWrite: 1.75e-6,
@@ -96,14 +100,6 @@ enum Pricing {
              + tiered(cacheRead, base: r.cacheRead, tier: r.cacheReadTiered)
     }
 
-    /// Estimated cost from total tokens only (Codex SQLite — no input/output split).
-    /// Uses blended rate: ~90% cached input, ~9% input, ~1% output.
-    static func estimatedCost(model: String, totalTokens: Int) -> Double {
-        guard let r = rates[modelFamily(model)], totalTokens > 0 else { return 0 }
-        let blended = 0.90 * r.cacheRead + 0.09 * r.input + 0.01 * r.output
-        return Double(totalTokens) * blended
-    }
-
     // `internal` so @testable tests can verify the tier-boundary math.
     static func tiered(_ tokens: Int, base: Double, tier: Double?) -> Double {
         guard tokens > 0 else { return 0 }
@@ -126,6 +122,8 @@ enum Pricing {
         if m.contains("gpt-5.4-mini")   { return "gpt-5.4-mini" }
         if m.contains("gpt-5.4-nano")   { return "gpt-5.4-nano" }
         if m.contains("gpt-5.4-pro")    { return "gpt-5.4-pro" }
+        if m.contains("gpt-5.5-pro")    { return "gpt-5.5-pro" }
+        if m.contains("gpt-5.5")        { return "gpt-5.5" }
         if m.contains("5.1-codex-mini") { return "gpt-5.1-codex-mini" }
         if m.contains("5.1-codex-max")  { return "gpt-5.1-codex" }  // no separate pricing, use codex
         if m.contains("5.1-codex")      { return "gpt-5.1-codex" }
@@ -256,6 +254,12 @@ enum Pricing {
         }
         if key == "gpt-5.4-pro" || key.hasPrefix("gpt-5.4-pro-20") {
             return "gpt-5.4-pro"
+        }
+        if key == "gpt-5.5-pro" || key.hasPrefix("gpt-5.5-pro-20") {
+            return "gpt-5.5-pro"
+        }
+        if key == "gpt-5.5" || key.hasPrefix("gpt-5.5-20") {
+            return "gpt-5.5"
         }
         if key == "gpt-5.4" || key.hasPrefix("gpt-5.4-20") {
             return "gpt-5.4"

@@ -686,6 +686,13 @@ final class UsageStore: ObservableObject {
                 break
             }
         }
+        if !buffer.isEmpty,
+           lines < Self.maxLinesPerFile,
+           let entry = parseLine(String(decoding: buffer, as: UTF8.self)) {
+            entries.append(entry)
+            lines += 1
+            buffer.removeAll(keepingCapacity: false)
+        }
 
         return ParsedChunk(entries: entries,
                            lineCount: lines,

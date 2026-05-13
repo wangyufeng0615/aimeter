@@ -288,12 +288,16 @@ enum CodexReader {
 
         let info = payload["info"] as? [String: Any] ?? [:]
         let totalRaw = normalizeUsage(info["total_token_usage"])
+        let totalDelta = totalRaw.map {
+            subtractUsage(current: $0, previous: state.previousTotal)
+        }
         let deltaRaw: RawUsage?
 
-        if let lastRaw = normalizeUsage(info["last_token_usage"]) {
+        if let lastRaw = normalizeUsage(info["last_token_usage"]),
+           totalDelta?.totalTokens != 0 {
             deltaRaw = lastRaw
-        } else if let totalRaw {
-            deltaRaw = subtractUsage(current: totalRaw, previous: state.previousTotal)
+        } else if let totalDelta {
+            deltaRaw = totalDelta
         } else {
             deltaRaw = nil
         }

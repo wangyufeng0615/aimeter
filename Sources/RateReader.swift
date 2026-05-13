@@ -141,15 +141,20 @@ enum CodexRateReader {
     /// for its whole lifetime; a full rescan every `fullScanInterval` catches
     /// the case where the user starts a brand-new session.
     private static let cacheLock = NSLock()
+    private static var cachedLatestSessionsDir: String?
     private static var cachedLatestURL: URL?
     private static var lastFullScanAt: Date?
     private static let fullScanInterval: TimeInterval = 60
 
     static func read() -> RateLimit? {
         let sessionsDir = AppPaths.codexSessionsDir
+        return read(sessionsDir: sessionsDir)
+    }
+
+    static func read(sessionsDir: URL, now: Date = Date()) -> RateLimit? {
         guard FileManager.default.fileExists(atPath: sessionsDir.path) else { return nil }
 
-        guard let latest = latestRollout(in: sessionsDir, now: Date()) else { return nil }
+        guard let latest = latestRollout(in: sessionsDir, now: now) else { return nil }
 
         // Read tail of file (last 100KB) for efficiency
         guard let handle = try? FileHandle(forReadingFrom: latest) else { return nil }
@@ -170,10 +175,13 @@ enum CodexRateReader {
             let s = String(line)
             guard s.contains("rate_limits"), s.contains("used_percent") else { continue }
             guard let lineData = s.data(using: .utf8),
-                  let json = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
-                  let payload = json["payload"] as? [String: Any],
-                  let rl = payload["rate_limits"] as? [String: Any]
+                  let json = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any]
             else { continue }
+            let payload = json["payload"] as? [String: Any]
+            let topLevelRateLimits = json["rate_limits"] as? [String: Any]
+            let payloadRateLimits = payload?["rate_limits"] as? [String: Any]
+            let rl = topLevelRateLimits ?? payloadRateLimits
+            guard let rl else { continue }
             // Skip auxiliary limit families (e.g. codex_bengalfox); only accept main "codex"
             let limitId = rl["limit_id"] as? String ?? "codex"
             guard limitId == "codex" else { continue }
@@ -199,18 +207,21 @@ enum CodexRateReader {
     }
 
     private static func latestRollout(in dir: URL, now: Date) -> URL? {
+        let dirKey = dir.standardizedFileURL.path
         cacheLock.lock()
+        let cachedDir = cachedLatestSessionsDir
         let cached = cachedLatestURL
         let lastScan = lastFullScanAt
         cacheLock.unlock()
 
         let cacheFresh = lastScan.map { now.timeIntervalSince($0) < fullScanInterval } ?? false
-        if cacheFresh, let cached, FileManager.default.fileExists(atPath: cached.path) {
+        if cacheFresh, cachedDir == dirKey, let cached, FileManager.default.fileExists(atPath: cached.path) {
             return cached
         }
 
         let found = findLatestRollout(in: dir)
         cacheLock.lock()
+        cachedLatestSessionsDir = dirKey
         cachedLatestURL = found
         lastFullScanAt = now
         cacheLock.unlock()

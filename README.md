@@ -19,7 +19,7 @@ A lightweight macOS menu bar app that tracks your [Claude Code](https://code.cla
 - Accurate 5-hour / weekly usage limits
 - Token usage and cost breakdown
 - Only use Claude Code or Codex? The other's panel stays hidden
-- All data comes from the official CLIs' local files — no third-party services
+- Usage and rate-limit data is read from local CLI files; no usage data is uploaded
 
 ## Install
 

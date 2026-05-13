@@ -53,6 +53,40 @@ final class CodexReaderTests: XCTestCase {
         XCTAssertEqual(entries.map(\.cachedInputTokens), [40, 10])
     }
 
+    func testReadEntriesIgnoresRepeatedLastTokenUsageWhenTotalsDoNotAdvance() throws {
+        let sessionsDir = try makeSessionsDir()
+        let file = sessionsDir.appendingPathComponent("2026/04/14/rollout-repeat.jsonl")
+        let start = Date(timeIntervalSince1970: 1_776_150_050)
+        let usage = [
+            "input_tokens": 100,
+            "cached_input_tokens": 40,
+            "output_tokens": 5,
+            "reasoning_output_tokens": 0,
+            "total_tokens": 105,
+        ]
+
+        try write([
+            try jsonLine([
+                "timestamp": iso(start),
+                "type": "session_meta",
+                "payload": ["id": "session-repeat"],
+            ]),
+            try jsonLine([
+                "timestamp": iso(start),
+                "type": "turn_context",
+                "payload": ["model": "gpt-5.4-mini"],
+            ]),
+            try tokenCountLine(timestamp: start.addingTimeInterval(1), last: usage, total: usage),
+            try tokenCountLine(timestamp: start.addingTimeInterval(2), last: usage, total: usage),
+        ].joined(separator: "\n") + "\n", to: file)
+
+        let entries = try XCTUnwrap(CodexReader.readEntries(since: start, sessionsDir: sessionsDir))
+        XCTAssertEqual(entries.count, 1)
+        XCTAssertEqual(entries[0].totalTokens, 105)
+        XCTAssertEqual(entries[0].inputTokens, 100)
+        XCTAssertEqual(entries[0].cachedInputTokens, 40)
+    }
+
     func testReadEntriesFallsBackToTotalUsageDiff() throws {
         let sessionsDir = try makeSessionsDir()
         let file = sessionsDir.appendingPathComponent("2026/04/14/rollout-b.jsonl")

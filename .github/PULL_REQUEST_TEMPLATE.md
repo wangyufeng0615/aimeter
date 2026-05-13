@@ -11,7 +11,9 @@
 
 ## Testing
 
-- [ ] `make build && make run` succeeds
+- [ ] `swift test` succeeds
+- [ ] `make build` succeeds
+- [ ] `make universal` succeeds for release/build-system changes
 - [ ] Tested with both Claude Code and Codex installed
 - [ ] Tested with only one provider installed
 

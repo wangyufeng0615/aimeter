@@ -7,6 +7,8 @@ final class PricingTests: XCTestCase {
         XCTAssertEqual(Pricing.modelFamily("gpt-5.4-mini"), "gpt-5.4-mini")
         XCTAssertEqual(Pricing.modelFamily("gpt-5.4-pro"), "gpt-5.4-pro")
         XCTAssertEqual(Pricing.modelFamily("gpt-5.4-nano"), "gpt-5.4-nano")
+        XCTAssertEqual(Pricing.modelFamily("gpt-5.5"), "gpt-5.5")
+        XCTAssertEqual(Pricing.modelFamily("gpt-5.5-pro"), "gpt-5.5-pro")
     }
 
     func testModelFamilyPrefersCurrentClaudePricingKeys() {
@@ -72,6 +74,16 @@ final class PricingTests: XCTestCase {
                 "output_cost_per_token": 4.5e-6,
                 "cache_read_input_token_cost": 0.075e-6,
             ],
+            "gpt-5.5": [
+                "input_cost_per_token": 5e-6,
+                "output_cost_per_token": 30e-6,
+                "cache_read_input_token_cost": 0.5e-6,
+            ],
+            "gpt-5.5-pro": [
+                "input_cost_per_token": 30e-6,
+                "output_cost_per_token": 180e-6,
+                "cache_read_input_token_cost": 3e-6,
+            ],
             "claude-opus-4-1": [
                 "input_cost_per_token": 15e-6,
                 "output_cost_per_token": 75e-6,
@@ -89,6 +101,8 @@ final class PricingTests: XCTestCase {
         XCTAssertEqual(parsed["gpt-5.4"]?.input, 2.5e-6)
         XCTAssertEqual(parsed["gpt-5.4-pro"]?.input, 30e-6)
         XCTAssertEqual(parsed["gpt-5.4-mini"]?.input, 0.75e-6)
+        XCTAssertEqual(parsed["gpt-5.5"]?.input, 5e-6)
+        XCTAssertEqual(parsed["gpt-5.5-pro"]?.input, 30e-6)
         XCTAssertEqual(parsed["claude-opus-4-6"]?.input, 5e-6)
         XCTAssertEqual(parsed["claude-opus-4-1"]?.input, 15e-6)
     }

@@ -39,7 +39,6 @@ struct SettingsView: View {
                         privacyItem(AppPaths.displayPath(AppPaths.claudeRateFile))
                         privacyItem(AppPaths.displayPath(AppPaths.claudeSettingsFile)
                             + "  (" + (S.zh ? "仅用于安装 hook" : "to install the hook") + ")")
-                        privacyItem(AppPaths.displayPath(AppPaths.codexStateFile))
                         privacyItem("\(AppPaths.displayPath(AppPaths.codexSessionsDir))/**/rollout-*.jsonl")
                     }
 

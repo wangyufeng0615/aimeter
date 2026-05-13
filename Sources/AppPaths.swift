@@ -34,10 +34,6 @@ enum AppPaths {
         claudeRoot.appendingPathComponent("settings.json")
     }
 
-    static var codexStateFile: URL {
-        codexRoot.appendingPathComponent("state_5.sqlite")
-    }
-
     static var codexSessionsDir: URL {
         codexRoot.appendingPathComponent("sessions", isDirectory: true)
     }
