@@ -145,15 +145,7 @@ struct DetailView: View {
             if hasRate,
                let r = rate?.fiveHourResetsAt,
                let m = resetMinutesRemaining(until: r) {
-                HStack(spacing: 0) {
-                    Color.clear.frame(width: labelWidth + 8)
-                    Text(S.resetsIn(S.timeSpan(minutes: m)))
-                        .font(Font2.meta)
-                        .foregroundColor(.secondary)
-                        .opacity(0.7)
-                    Spacer()
-                }
-                .padding(.top, 0)
+                resetText(m, indent: labelWidth + 8)
             }
 
             Spacer().frame(height: 2)
@@ -170,6 +162,13 @@ struct DetailView: View {
                 percentageText(pct7, color: pctColor(pct7),
                                numberSize: 11, unitSize: 7)
                     .frame(width: valueWidth, alignment: .trailing)
+            }
+
+            if hasRate,
+               pct7 > 50,
+               let r = rate?.sevenDayResetsAt,
+               let m = resetMinutesRemaining(until: r) {
+                resetText(m, indent: labelWidth + 8)
             }
 
             if !hasRate {
@@ -327,6 +326,18 @@ struct DetailView: View {
         let remaining = date.timeIntervalSinceNow
         guard remaining > 0 else { return nil }
         return max(1, Int(ceil(remaining / 60)))
+    }
+
+    private func resetText(_ minutes: Int, indent: CGFloat) -> some View {
+        HStack(spacing: 0) {
+            Color.clear.frame(width: indent)
+            Text(S.resetsIn(S.timeSpan(minutes: minutes)))
+                .font(Font2.meta)
+                .foregroundColor(.secondary)
+                .opacity(0.7)
+            Spacer()
+        }
+        .padding(.top, 0)
     }
 
     private func pctColor(_ pct: Double) -> Color {

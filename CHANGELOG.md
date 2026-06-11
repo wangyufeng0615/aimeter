@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.3.4] - 2026-06-11
+
+### Fixed
+- Show the 7-day limit reset time once 7D usage is above 50% and the provider exposes a reset timestamp.
+- Add explicit Claude Fable 5, Mythos 5, Opus 4.8, and Opus 4.7 pricing support, including 1-hour prompt-cache write pricing and Opus fast-mode pricing.
+
 ## [0.3.3] - 2026-05-13
 
 ### Changed

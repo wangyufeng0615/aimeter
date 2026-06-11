@@ -12,10 +12,62 @@ final class PricingTests: XCTestCase {
     }
 
     func testModelFamilyPrefersCurrentClaudePricingKeys() {
+        XCTAssertEqual(Pricing.modelFamily("claude-fable-5"), "claude-fable-5")
+        XCTAssertEqual(Pricing.modelFamily("fable-5"), "claude-fable-5")
+        XCTAssertEqual(Pricing.modelFamily("claude-mythos-5"), "claude-mythos-5")
+        XCTAssertEqual(Pricing.modelFamily("claude-opus-4-8"), "claude-opus-4-8")
+        XCTAssertEqual(Pricing.modelFamily("claude-opus-4-7-20260416"), "claude-opus-4-7")
         XCTAssertEqual(Pricing.modelFamily("claude-opus-4-6"), "claude-opus-4-6")
         XCTAssertEqual(Pricing.modelFamily("claude-opus-4-1"), "claude-opus-4-1")
         XCTAssertEqual(Pricing.modelFamily("claude-sonnet-4-6"), "claude-sonnet-4-6")
         XCTAssertEqual(Pricing.modelFamily("claude-haiku-4-5"), "claude-haiku-4-5")
+    }
+
+    func testFablePricingIncludesOneHourCacheWrites() {
+        let cost = Pricing.cost(
+            model: "claude-fable-5",
+            input: 1_000_000,
+            output: 1_000_000,
+            cacheWrite: 1_000_000,
+            cacheWrite1h: 1_000_000,
+            cacheRead: 1_000_000
+        )
+
+        XCTAssertEqual(cost, 93.5, accuracy: 1e-12)
+    }
+
+    func testOpusPricingIncludesFastMode() {
+        let standard48 = Pricing.cost(
+            model: "claude-opus-4-8",
+            speed: "standard",
+            input: 1_000_000,
+            output: 1_000_000,
+            cacheWrite: 1_000_000,
+            cacheWrite1h: 1_000_000,
+            cacheRead: 1_000_000
+        )
+        let fast48 = Pricing.cost(
+            model: "claude-opus-4-8",
+            speed: "fast",
+            input: 1_000_000,
+            output: 1_000_000,
+            cacheWrite: 1_000_000,
+            cacheWrite1h: 1_000_000,
+            cacheRead: 1_000_000
+        )
+        let fast47 = Pricing.cost(
+            model: "claude-opus-4-7",
+            speed: "fast",
+            input: 1_000_000,
+            output: 1_000_000,
+            cacheWrite: 1_000_000,
+            cacheWrite1h: 1_000_000,
+            cacheRead: 1_000_000
+        )
+
+        XCTAssertEqual(standard48, 46.75, accuracy: 1e-12)
+        XCTAssertEqual(fast48, 93.5, accuracy: 1e-12)
+        XCTAssertEqual(fast47, 280.5, accuracy: 1e-12)
     }
 
     func testTieredBelowThresholdUsesBasePriceOnly() {
@@ -84,6 +136,19 @@ final class PricingTests: XCTestCase {
                 "output_cost_per_token": 180e-6,
                 "cache_read_input_token_cost": 3e-6,
             ],
+            "anthropic.claude-fable-5": [
+                "input_cost_per_token": 10e-6,
+                "output_cost_per_token": 50e-6,
+                "cache_creation_input_token_cost": 12.5e-6,
+                "cache_read_input_token_cost": 1e-6,
+            ],
+            "claude-fable-5": [
+                "input_cost_per_token": 10e-6,
+                "output_cost_per_token": 50e-6,
+                "cache_creation_input_token_cost": 12.5e-6,
+                "cache_creation_input_token_cost_above_1hr": 20e-6,
+                "cache_read_input_token_cost": 1e-6,
+            ],
             "claude-opus-4-1": [
                 "input_cost_per_token": 15e-6,
                 "output_cost_per_token": 75e-6,
@@ -96,6 +161,20 @@ final class PricingTests: XCTestCase {
                 "cache_creation_input_token_cost": 6.25e-6,
                 "cache_read_input_token_cost": 0.5e-6,
             ],
+            "anthropic.claude-opus-4-7": [
+                "input_cost_per_token": 5e-6,
+                "output_cost_per_token": 25e-6,
+                "cache_creation_input_token_cost": 6.25e-6,
+                "cache_creation_input_token_cost_above_1hr": 10e-6,
+                "cache_read_input_token_cost": 0.5e-6,
+            ],
+            "claude-opus-4-8": [
+                "input_cost_per_token": 5e-6,
+                "output_cost_per_token": 25e-6,
+                "cache_creation_input_token_cost": 6.25e-6,
+                "cache_creation_input_token_cost_above_1hr": 10e-6,
+                "cache_read_input_token_cost": 0.5e-6,
+            ],
         ])
 
         XCTAssertEqual(parsed["gpt-5.4"]?.input, 2.5e-6)
@@ -103,6 +182,15 @@ final class PricingTests: XCTestCase {
         XCTAssertEqual(parsed["gpt-5.4-mini"]?.input, 0.75e-6)
         XCTAssertEqual(parsed["gpt-5.5"]?.input, 5e-6)
         XCTAssertEqual(parsed["gpt-5.5-pro"]?.input, 30e-6)
+        XCTAssertEqual(parsed["claude-fable-5"]?.input, 10e-6)
+        XCTAssertEqual(parsed["claude-fable-5"]?.output, 50e-6)
+        XCTAssertEqual(parsed["claude-fable-5"]?.cacheWrite, 12.5e-6)
+        XCTAssertEqual(parsed["claude-fable-5"]?.cacheWrite1h, 20e-6)
+        XCTAssertEqual(parsed["claude-fable-5"]?.cacheRead, 1e-6)
+        XCTAssertEqual(parsed["claude-opus-4-8"]?.input, 5e-6)
+        XCTAssertEqual(parsed["claude-opus-4-8"]?.cacheWrite1h, 10e-6)
+        XCTAssertEqual(parsed["claude-opus-4-7"]?.input, 5e-6)
+        XCTAssertEqual(parsed["claude-opus-4-7"]?.cacheWrite1h, 10e-6)
         XCTAssertEqual(parsed["claude-opus-4-6"]?.input, 5e-6)
         XCTAssertEqual(parsed["claude-opus-4-1"]?.input, 15e-6)
     }

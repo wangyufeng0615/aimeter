@@ -32,6 +32,7 @@ final class RateReaderTests: XCTestCase {
                     ],
                     "seven_day": [
                         "used_percentage": 34.0,
+                        "resets_at": 1_776_700_000.0,
                     ],
                 ],
             ],
@@ -44,6 +45,7 @@ final class RateReaderTests: XCTestCase {
         XCTAssertEqual(result.rate?.fiveHourPct, 12.0)
         XCTAssertEqual(result.rate?.sevenDayPct, 34.0)
         XCTAssertEqual(result.rate?.fiveHourResetsAt, normalizeTimestamp(1_776_186_000.0))
+        XCTAssertEqual(result.rate?.sevenDayResetsAt, normalizeTimestamp(1_776_700_000.0))
         XCTAssertTrue(FileManager.default.fileExists(atPath: cacheFile.path))
     }
 
@@ -56,7 +58,10 @@ final class RateReaderTests: XCTestCase {
             [
                 "rate_limits": [
                     "five_hour": ["used_percentage": 18.0],
-                    "seven_day": ["used_percentage": 52.0],
+                    "seven_day": [
+                        "used_percentage": 52.0,
+                        "resets_at": 1_776_700_100.0,
+                    ],
                 ],
             ],
             to: usageFile,
@@ -82,6 +87,7 @@ final class RateReaderTests: XCTestCase {
         XCTAssertEqual(result.status, .available)
         XCTAssertEqual(result.rate?.fiveHourPct, 18.0)
         XCTAssertEqual(result.rate?.sevenDayPct, 52.0)
+        XCTAssertEqual(result.rate?.sevenDayResetsAt, normalizeTimestamp(1_776_700_100.0))
     }
 
     func testClaudeInspectReturnsUnavailableWithoutRateLimitsOrCache() throws {
@@ -119,6 +125,7 @@ final class RateReaderTests: XCTestCase {
         XCTAssertEqual(rate?.fiveHourPct, 42)
         XCTAssertEqual(rate?.sevenDayPct, 55)
         XCTAssertEqual(rate?.fiveHourResetsAt, normalizeTimestamp(1_776_183_600))
+        XCTAssertEqual(rate?.sevenDayResetsAt, normalizeTimestamp(1_776_700_200))
     }
 
     func testCodexLatestRolloutCacheIsScopedToSessionsDir() throws {
@@ -175,6 +182,7 @@ final class RateReaderTests: XCTestCase {
                 "secondary": [
                     "used_percent": sevenDay,
                     "window_minutes": 10080,
+                    "resets_at": 1_776_700_200,
                 ],
             ],
         ]

@@ -6,25 +6,68 @@ enum Pricing {
         let output: Double
         let cacheRead: Double
         let cacheWrite: Double
+        let cacheWrite1h: Double
         let inputTiered: Double?    // above 200K threshold
         let outputTiered: Double?
         let cacheWriteTiered: Double?
         let cacheReadTiered: Double?
+        let cacheWrite1hTiered: Double?
+
+        init(input: Double, output: Double, cacheRead: Double, cacheWrite: Double,
+             cacheWrite1h: Double? = nil, inputTiered: Double?, outputTiered: Double?,
+             cacheWriteTiered: Double?, cacheReadTiered: Double?,
+             cacheWrite1hTiered: Double? = nil) {
+            self.input = input
+            self.output = output
+            self.cacheRead = cacheRead
+            self.cacheWrite = cacheWrite
+            self.cacheWrite1h = cacheWrite1h ?? cacheWrite
+            self.inputTiered = inputTiered
+            self.outputTiered = outputTiered
+            self.cacheWriteTiered = cacheWriteTiered
+            self.cacheReadTiered = cacheReadTiered
+            self.cacheWrite1hTiered = cacheWrite1hTiered
+        }
     }
 
     // `internal` so @testable can cover the tier-boundary semantics directly.
     static let tieredThreshold = 200_000
 
-    // Hardcoded fallback — matches LiteLLM pricing as of 2026-04.
+    // Hardcoded fallback — matches LiteLLM pricing as of 2026-06.
     private static let defaultRates: [String: Rate] = [
         // Claude models
-        "claude-opus-4-6": Rate(input: 5e-6, output: 25e-6, cacheRead: 0.5e-6, cacheWrite: 6.25e-6,
+        "claude-fable-5": Rate(input: 10e-6, output: 50e-6, cacheRead: 1e-6,
+                               cacheWrite: 12.5e-6, cacheWrite1h: 20e-6,
+                               inputTiered: nil, outputTiered: nil, cacheWriteTiered: nil, cacheReadTiered: nil),
+        "claude-mythos-5": Rate(input: 10e-6, output: 50e-6, cacheRead: 1e-6,
+                                cacheWrite: 12.5e-6, cacheWrite1h: 20e-6,
                                 inputTiered: nil, outputTiered: nil, cacheWriteTiered: nil, cacheReadTiered: nil),
-        "claude-opus-4-1": Rate(input: 15e-6, output: 75e-6, cacheRead: 1.5e-6, cacheWrite: 18.75e-6,
+        "claude-opus-4-8": Rate(input: 5e-6, output: 25e-6, cacheRead: 0.5e-6,
+                                cacheWrite: 6.25e-6, cacheWrite1h: 10e-6,
                                 inputTiered: nil, outputTiered: nil, cacheWriteTiered: nil, cacheReadTiered: nil),
-        "claude-sonnet-4-6": Rate(input: 3e-6, output: 15e-6, cacheRead: 0.3e-6, cacheWrite: 3.75e-6,
+        "claude-opus-4-8-fast": Rate(input: 10e-6, output: 50e-6, cacheRead: 1e-6,
+                                     cacheWrite: 12.5e-6, cacheWrite1h: 20e-6,
+                                     inputTiered: nil, outputTiered: nil, cacheWriteTiered: nil, cacheReadTiered: nil),
+        "claude-opus-4-7": Rate(input: 5e-6, output: 25e-6, cacheRead: 0.5e-6,
+                                cacheWrite: 6.25e-6, cacheWrite1h: 10e-6,
+                                inputTiered: nil, outputTiered: nil, cacheWriteTiered: nil, cacheReadTiered: nil),
+        "claude-opus-4-7-fast": Rate(input: 30e-6, output: 150e-6, cacheRead: 3e-6,
+                                     cacheWrite: 37.5e-6, cacheWrite1h: 60e-6,
+                                     inputTiered: nil, outputTiered: nil, cacheWriteTiered: nil, cacheReadTiered: nil),
+        "claude-opus-4-6": Rate(input: 5e-6, output: 25e-6, cacheRead: 0.5e-6,
+                                cacheWrite: 6.25e-6, cacheWrite1h: 10e-6,
+                                inputTiered: nil, outputTiered: nil, cacheWriteTiered: nil, cacheReadTiered: nil),
+        "claude-opus-4-6-fast": Rate(input: 30e-6, output: 150e-6, cacheRead: 3e-6,
+                                     cacheWrite: 37.5e-6, cacheWrite1h: 60e-6,
+                                     inputTiered: nil, outputTiered: nil, cacheWriteTiered: nil, cacheReadTiered: nil),
+        "claude-opus-4-1": Rate(input: 15e-6, output: 75e-6, cacheRead: 1.5e-6,
+                                cacheWrite: 18.75e-6, cacheWrite1h: 30e-6,
+                                inputTiered: nil, outputTiered: nil, cacheWriteTiered: nil, cacheReadTiered: nil),
+        "claude-sonnet-4-6": Rate(input: 3e-6, output: 15e-6, cacheRead: 0.3e-6,
+                                  cacheWrite: 3.75e-6, cacheWrite1h: 6e-6,
                                   inputTiered: nil, outputTiered: nil, cacheWriteTiered: nil, cacheReadTiered: nil),
-        "claude-haiku-4-5": Rate(input: 1e-6, output: 5e-6, cacheRead: 0.1e-6, cacheWrite: 1.25e-6,
+        "claude-haiku-4-5": Rate(input: 1e-6, output: 5e-6, cacheRead: 0.1e-6,
+                                 cacheWrite: 1.25e-6, cacheWrite1h: 2e-6,
                                  inputTiered: nil, outputTiered: nil, cacheWriteTiered: nil, cacheReadTiered: nil),
         // OpenAI / Codex models
         "gpt-5.4": Rate(input: 2.5e-6, output: 15e-6, cacheRead: 0.25e-6, cacheWrite: 2.5e-6,
@@ -92,11 +135,15 @@ enum Pricing {
     }
 
     /// Full cost from input/output/cache breakdown (Claude JSONL data)
-    static func cost(model: String, input: Int, output: Int, cacheWrite: Int, cacheRead: Int) -> Double {
-        guard let r = rates[modelFamily(model)] else { return 0 }
+    static func cost(model: String, speed: String? = nil, input: Int, output: Int, cacheWrite: Int,
+                     cacheWrite1h: Int = 0, cacheRead: Int) -> Double {
+        let family = modelFamily(model)
+        let billingFamily = billingFamily(family, speed: speed)
+        guard let r = rates[billingFamily] ?? rates[family] else { return 0 }
         return tiered(input, base: r.input, tier: r.inputTiered)
              + tiered(output, base: r.output, tier: r.outputTiered)
              + tiered(cacheWrite, base: r.cacheWrite, tier: r.cacheWriteTiered)
+             + tiered(cacheWrite1h, base: r.cacheWrite1h, tier: r.cacheWrite1hTiered)
              + tiered(cacheRead, base: r.cacheRead, tier: r.cacheReadTiered)
     }
 
@@ -114,6 +161,10 @@ enum Pricing {
     static func modelFamily(_ model: String) -> String {
         let m = model.lowercased()
         // Claude
+        if m.contains("fable-5") { return "claude-fable-5" }
+        if m.contains("mythos-5") { return "claude-mythos-5" }
+        if m.contains("opus-4-8") { return "claude-opus-4-8" }
+        if m.contains("opus-4-7") { return "claude-opus-4-7" }
         if m.contains("opus-4-1") || m.contains("opus-4-20250514") { return "claude-opus-4-1" }
         if m.contains("opus")   { return "claude-opus-4-6" }
         if m.contains("sonnet") { return "claude-sonnet-4-6" }
@@ -132,6 +183,16 @@ enum Pricing {
         if m.contains("gpt-5.4")        { return "gpt-5.4" }
         if m.contains("gpt-5")          { return "gpt-5.4" }  // fallback for unknown gpt-5.x
         return "claude-sonnet-4-6"  // ultimate fallback
+    }
+
+    private static func billingFamily(_ family: String, speed: String?) -> String {
+        guard speed?.lowercased() == "fast" else { return family }
+        switch family {
+        case "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6":
+            return "\(family)-fast"
+        default:
+            return family
+        }
     }
 
     static func shortenModelName(_ model: String) -> String {
@@ -165,7 +226,7 @@ enum Pricing {
             // Filter out parsed rates with non-finite or unreasonable values
             let parsed = parseLiteLLM(json).filter { _, r in
                 isSane(r.input) && isSane(r.output) &&
-                isSane(r.cacheRead) && isSane(r.cacheWrite)
+                isSane(r.cacheRead) && isSane(r.cacheWrite) && isSane(r.cacheWrite1h)
             }
             result = parsed.isEmpty ? nil : parsed
         }.resume()
@@ -197,6 +258,8 @@ enum Pricing {
                 input: inp, output: out,
                 cacheRead: info["cache_read_input_token_cost"] as? Double ?? inp * 0.1,
                 cacheWrite: info["cache_creation_input_token_cost"] as? Double ?? inp,
+                cacheWrite1h: info["cache_creation_input_token_cost_above_1hr"] as? Double
+                    ?? info["cache_creation_input_token_cost_1h"] as? Double,
                 inputTiered: info["input_cost_per_token_above_200k_tokens"] as? Double
                     ?? info["input_cost_per_token_above_272k_tokens"] as? Double,
                 outputTiered: info["output_cost_per_token_above_200k_tokens"] as? Double
@@ -204,7 +267,9 @@ enum Pricing {
                 cacheWriteTiered: info["cache_creation_input_token_cost_above_200k_tokens"] as? Double
                     ?? info["cache_creation_input_token_cost_above_272k_tokens"] as? Double,
                 cacheReadTiered: info["cache_read_input_token_cost_above_200k_tokens"] as? Double
-                    ?? info["cache_read_input_token_cost_above_272k_tokens"] as? Double)
+                    ?? info["cache_read_input_token_cost_above_272k_tokens"] as? Double,
+                cacheWrite1hTiered: info["cache_creation_input_token_cost_above_1hr_above_200k_tokens"] as? Double
+                    ?? info["cache_creation_input_token_cost_above_1hr_above_272k_tokens"] as? Double)
 
             // For Claude: prefer direct API over Bedrock/Azure
             let isDirect = k.hasPrefix("claude") || k.hasPrefix("gpt-")
@@ -230,6 +295,26 @@ enum Pricing {
     }
 
     private static func canonicalLiteLLMKey(_ key: String) -> String? {
+        if key == "claude-fable-5" || key.hasPrefix("claude-fable-5-")
+            || key.hasSuffix("/claude-fable-5") || key.contains(".claude-fable-5")
+            || key == "vertex_ai/claude-fable-5@default" {
+            return "claude-fable-5"
+        }
+        if key == "claude-mythos-5" || key.hasPrefix("claude-mythos-5-")
+            || key.hasSuffix("/claude-mythos-5") || key.contains(".claude-mythos-5")
+            || key == "vertex_ai/claude-mythos-5@default" {
+            return "claude-mythos-5"
+        }
+        if key == "claude-opus-4-8" || key.hasPrefix("claude-opus-4-8-")
+            || key.hasSuffix("/claude-opus-4-8") || key.contains(".claude-opus-4-8")
+            || key == "vertex_ai/claude-opus-4-8@default" {
+            return "claude-opus-4-8"
+        }
+        if key == "claude-opus-4-7" || key.hasPrefix("claude-opus-4-7-")
+            || key.hasSuffix("/claude-opus-4-7") || key.contains(".claude-opus-4-7")
+            || key == "vertex_ai/claude-opus-4-7@default" {
+            return "claude-opus-4-7"
+        }
         if key == "claude-opus-4-6" || key.hasPrefix("claude-opus-4-6-")
             || key == "claude-opus-4-5" || key.hasPrefix("claude-opus-4-5-") {
             return "claude-opus-4-6"
@@ -307,11 +392,14 @@ enum Pricing {
 
         var result: [String: Rate] = [:]
         for (family, p) in json {
+            let fallback = defaultRates[family]
             result[family] = Rate(
                 input: p["input"] ?? 0, output: p["output"] ?? 0,
                 cacheRead: p["cacheRead"] ?? 0, cacheWrite: p["cacheWrite"] ?? 0,
+                cacheWrite1h: p["cacheWrite1h"] ?? fallback?.cacheWrite1h,
                 inputTiered: p["inputTiered"], outputTiered: p["outputTiered"],
-                cacheWriteTiered: p["cacheWriteTiered"], cacheReadTiered: p["cacheReadTiered"])
+                cacheWriteTiered: p["cacheWriteTiered"], cacheReadTiered: p["cacheReadTiered"],
+                cacheWrite1hTiered: p["cacheWrite1hTiered"] ?? fallback?.cacheWrite1hTiered)
         }
         return result.isEmpty ? nil : (result, -mod.timeIntervalSinceNow)
     }
@@ -321,12 +409,14 @@ enum Pricing {
         for (family, r) in rates {
             var d: [String: Double] = [
                 "input": r.input, "output": r.output,
-                "cacheRead": r.cacheRead, "cacheWrite": r.cacheWrite
+                "cacheRead": r.cacheRead, "cacheWrite": r.cacheWrite,
+                "cacheWrite1h": r.cacheWrite1h
             ]
             if let v = r.inputTiered { d["inputTiered"] = v }
             if let v = r.outputTiered { d["outputTiered"] = v }
             if let v = r.cacheWriteTiered { d["cacheWriteTiered"] = v }
             if let v = r.cacheReadTiered { d["cacheReadTiered"] = v }
+            if let v = r.cacheWrite1hTiered { d["cacheWrite1hTiered"] = v }
             json[family] = d
         }
         if let data = try? JSONSerialization.data(withJSONObject: json) {

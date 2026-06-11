@@ -93,6 +93,93 @@ final class UsageStoreTests: XCTestCase {
     }
 
     @MainActor
+    func testClaudeParserReadsOneHourCacheCreationTokens() throws {
+        let projectsDir = try makeProjectsDir()
+        let logFile = projectsDir.appendingPathComponent("session.jsonl")
+        let now = Date(timeIntervalSince1970: 1_776_150_130)
+
+        try write(
+            try usageLine(
+                messageID: "m1",
+                requestID: "r1",
+                timestamp: now,
+                model: "claude-fable-5",
+                input: 1_000_000,
+                output: 1_000_000,
+                cacheCreation: 2_000_000,
+                cacheCreation1h: 1_000_000,
+                cacheRead: 1_000_000
+            ) + "\n",
+            to: logFile
+        )
+
+        let store = makeStore(projectsDir: projectsDir, now: now)
+        store.refreshSynchronouslyForTesting()
+
+        XCTAssertEqual(store.ccEntries[0].cacheCreationTokens, 2_000_000)
+        XCTAssertEqual(store.ccEntries[0].cacheCreation1hTokens, 1_000_000)
+        XCTAssertEqual(store.ccEntries[0].cost, 93.5, accuracy: 1e-12)
+    }
+
+    @MainActor
+    func testClaudeParserUsesFastModePricing() throws {
+        let projectsDir = try makeProjectsDir()
+        let logFile = projectsDir.appendingPathComponent("session.jsonl")
+        let now = Date(timeIntervalSince1970: 1_776_150_135)
+
+        try write(
+            try usageLine(
+                messageID: "m1",
+                requestID: "r1",
+                timestamp: now,
+                model: "claude-opus-4-8",
+                input: 1_000_000,
+                output: 1_000_000,
+                cacheCreation: 2_000_000,
+                cacheCreation1h: 1_000_000,
+                cacheRead: 1_000_000,
+                speed: "fast"
+            ) + "\n",
+            to: logFile
+        )
+
+        let store = makeStore(projectsDir: projectsDir, now: now)
+        store.refreshSynchronouslyForTesting()
+
+        XCTAssertEqual(store.ccEntries[0].speed, "fast")
+        XCTAssertEqual(store.ccEntries[0].cost, 93.5, accuracy: 1e-12)
+    }
+
+    @MainActor
+    func testClaudeParserUsesOpus47FastModePricing() throws {
+        let projectsDir = try makeProjectsDir()
+        let logFile = projectsDir.appendingPathComponent("session.jsonl")
+        let now = Date(timeIntervalSince1970: 1_776_150_140)
+
+        try write(
+            try usageLine(
+                messageID: "m1",
+                requestID: "r1",
+                timestamp: now,
+                model: "claude-opus-4-7",
+                input: 1_000_000,
+                output: 1_000_000,
+                cacheCreation: 2_000_000,
+                cacheCreation1h: 1_000_000,
+                cacheRead: 1_000_000,
+                speed: "fast"
+            ) + "\n",
+            to: logFile
+        )
+
+        let store = makeStore(projectsDir: projectsDir, now: now)
+        store.refreshSynchronouslyForTesting()
+
+        XCTAssertEqual(store.ccEntries[0].speed, "fast")
+        XCTAssertEqual(store.ccEntries[0].cost, 280.5, accuracy: 1e-12)
+    }
+
+    @MainActor
     func testCachedClaudeEntriesArePrunedWhenTheyAgeOut() throws {
         let projectsDir = try makeProjectsDir()
         let logFile = projectsDir.appendingPathComponent("session.jsonl")
@@ -141,6 +228,7 @@ final class UsageStoreTests: XCTestCase {
             fiveHourPct: 12,
             sevenDayPct: 34,
             fiveHourResetsAt: now.addingTimeInterval(3600),
+            sevenDayResetsAt: now.addingTimeInterval(7 * 86400),
             updatedAt: now
         )
 
@@ -175,6 +263,7 @@ final class UsageStoreTests: XCTestCase {
             fiveHourPct: 12,
             sevenDayPct: 34,
             fiveHourResetsAt: now.addingTimeInterval(3600),
+            sevenDayResetsAt: now.addingTimeInterval(7 * 86400),
             updatedAt: now
         )
         var calls = 0
@@ -310,7 +399,9 @@ final class UsageStoreTests: XCTestCase {
         input: Int,
         output: Int = 5,
         cacheCreation: Int = 0,
+        cacheCreation1h: Int = 0,
         cacheRead: Int = 0,
+        speed: String? = nil,
         costUSD: Double? = nil
     ) throws -> String {
         let formatter = ISO8601DateFormatter()
@@ -331,6 +422,23 @@ final class UsageStoreTests: XCTestCase {
                 ],
             ],
         ]
+        if cacheCreation1h > 0 {
+            var message = json["message"] as? [String: Any] ?? [:]
+            var usage = message["usage"] as? [String: Any] ?? [:]
+            usage["cache_creation"] = [
+                "ephemeral_5m_input_tokens": max(0, cacheCreation - cacheCreation1h),
+                "ephemeral_1h_input_tokens": cacheCreation1h,
+            ]
+            message["usage"] = usage
+            json["message"] = message
+        }
+        if let speed {
+            var message = json["message"] as? [String: Any] ?? [:]
+            var usage = message["usage"] as? [String: Any] ?? [:]
+            usage["speed"] = speed
+            message["usage"] = usage
+            json["message"] = message
+        }
         if let costUSD {
             json["costUSD"] = costUSD
         }

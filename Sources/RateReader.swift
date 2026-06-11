@@ -5,6 +5,7 @@ struct RateLimit: Equatable {
     let fiveHourPct: Double
     let sevenDayPct: Double?
     let fiveHourResetsAt: Date?
+    let sevenDayResetsAt: Date?
     let updatedAt: Date  // file modification time
 }
 
@@ -68,16 +69,22 @@ enum ClaudeRateReader {
             return (nil, .rateLimitsUnavailable)
         }
 
-        let sevenDay = (rl["seven_day"] as? [String: Any])?["used_percentage"] as? Double
-        var resetsAt: Date? = nil
+        let sevenDayInfo = rl["seven_day"] as? [String: Any]
+        let sevenDay = sevenDayInfo?["used_percentage"] as? Double
+        var fiveHourResetsAt: Date? = nil
         if let ts = fiveHour["resets_at"] as? Double {
-            resetsAt = normalizeTimestamp(ts)
+            fiveHourResetsAt = normalizeTimestamp(ts)
+        }
+        var sevenDayResetsAt: Date? = nil
+        if let ts = sevenDayInfo?["resets_at"] as? Double {
+            sevenDayResetsAt = normalizeTimestamp(ts)
         }
 
         let rate = RateLimit(
             fiveHourPct: pct,
             sevenDayPct: sevenDay,
-            fiveHourResetsAt: resetsAt,
+            fiveHourResetsAt: fiveHourResetsAt,
+            sevenDayResetsAt: sevenDayResetsAt,
             updatedAt: modDate
         )
         writeCache(rate, to: cachePath)
@@ -102,12 +109,14 @@ enum ClaudeRateReader {
         else { return nil }
 
         let sevenDayPct = json["sevenDayPct"] as? Double
-        let resetsAtRaw = json["fiveHourResetsAt"] as? Double
+        let fiveHourResetsAtRaw = json["fiveHourResetsAt"] as? Double
+        let sevenDayResetsAtRaw = json["sevenDayResetsAt"] as? Double
 
         return RateLimit(
             fiveHourPct: fiveHourPct,
             sevenDayPct: sevenDayPct,
-            fiveHourResetsAt: resetsAtRaw.map(normalizeTimestamp),
+            fiveHourResetsAt: fiveHourResetsAtRaw.map(normalizeTimestamp),
+            sevenDayResetsAt: sevenDayResetsAtRaw.map(normalizeTimestamp),
             updatedAt: normalizeTimestamp(updatedAtRaw)
         )
     }
@@ -122,6 +131,9 @@ enum ClaudeRateReader {
         }
         if let resetsAt = rate.fiveHourResetsAt?.timeIntervalSince1970 {
             json["fiveHourResetsAt"] = resetsAt
+        }
+        if let resetsAt = rate.sevenDayResetsAt?.timeIntervalSince1970 {
+            json["sevenDayResetsAt"] = resetsAt
         }
         guard let data = try? JSONSerialization.data(withJSONObject: json, options: [.sortedKeys]) else { return }
         try? FileManager.default.createDirectory(
@@ -194,16 +206,23 @@ enum CodexRateReader {
               let pct = primary["used_percent"] as? Double
         else { return nil }
 
-        let secondary = (rl["secondary"] as? [String: Any])?["used_percent"] as? Double
-        var resetsAt: Date? = nil
+        let secondaryInfo = rl["secondary"] as? [String: Any]
+        let secondary = secondaryInfo?["used_percent"] as? Double
+        var primaryResetsAt: Date? = nil
         if let ts = primary["resets_at"] as? Double {
-            resetsAt = normalizeTimestamp(ts)
+            primaryResetsAt = normalizeTimestamp(ts)
+        }
+        var secondaryResetsAt: Date? = nil
+        if let ts = secondaryInfo?["resets_at"] as? Double {
+            secondaryResetsAt = normalizeTimestamp(ts)
         }
 
         let modDate = (try? FileManager.default.attributesOfItem(atPath: latest.path))?[.modificationDate] as? Date ?? Date()
 
         return RateLimit(fiveHourPct: pct, sevenDayPct: secondary,
-                         fiveHourResetsAt: resetsAt, updatedAt: modDate)
+                         fiveHourResetsAt: primaryResetsAt,
+                         sevenDayResetsAt: secondaryResetsAt,
+                         updatedAt: modDate)
     }
 
     private static func latestRollout(in dir: URL, now: Date) -> URL? {

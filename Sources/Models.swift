@@ -7,7 +7,9 @@ struct UsageEntry: Identifiable, Equatable, Hashable {
     let inputTokens: Int
     let outputTokens: Int
     let cacheCreationTokens: Int
+    let cacheCreation1hTokens: Int
     let cacheReadTokens: Int
+    let speed: String?
     let costUSD: Double?  // from JSONL if available (ccusage "auto" mode)
 
     var totalTokens: Int {
@@ -16,8 +18,11 @@ struct UsageEntry: Identifiable, Equatable, Hashable {
 
     var cost: Double {
         if let c = costUSD { return c }
-        return Pricing.cost(model: model, input: inputTokens, output: outputTokens,
-                            cacheWrite: cacheCreationTokens, cacheRead: cacheReadTokens)
+        let cacheCreation5mTokens = max(0, cacheCreationTokens - cacheCreation1hTokens)
+        return Pricing.cost(model: model, speed: speed, input: inputTokens, output: outputTokens,
+                            cacheWrite: cacheCreation5mTokens,
+                            cacheWrite1h: cacheCreation1hTokens,
+                            cacheRead: cacheReadTokens)
     }
 }
 

@@ -746,14 +746,22 @@ final class UsageStore: ObservableObject {
 
         // ccusage "auto" mode: prefer costUSD from JSONL if available
         let costUSD = json["costUSD"] as? Double
+        let cacheCreationTotal = usage["cache_creation_input_tokens"] as? Int ?? 0
+        let cacheCreation = usage["cache_creation"] as? [String: Any]
+        let cacheCreation5m = cacheCreation?["ephemeral_5m_input_tokens"] as? Int ?? 0
+        let cacheCreation1h = cacheCreation?["ephemeral_1h_input_tokens"] as? Int ?? 0
+        let detailedCacheCreationTotal = cacheCreation5m + cacheCreation1h
+        let normalizedCacheCreationTotal = max(cacheCreationTotal, detailedCacheCreationTotal)
 
         return UsageEntry(
             id: "\(msgId):\(reqId)", timestamp: date,
             model: msg["model"] as? String ?? "unknown",
             inputTokens: usage["input_tokens"] as? Int ?? 0,
             outputTokens: usage["output_tokens"] as? Int ?? 0,
-            cacheCreationTokens: usage["cache_creation_input_tokens"] as? Int ?? 0,
+            cacheCreationTokens: normalizedCacheCreationTotal,
+            cacheCreation1hTokens: min(cacheCreation1h, normalizedCacheCreationTotal),
             cacheReadTokens: usage["cache_read_input_tokens"] as? Int ?? 0,
+            speed: usage["speed"] as? String,
             costUSD: costUSD)
     }
 
