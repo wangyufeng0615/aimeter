@@ -6,6 +6,9 @@
 - Add Claude Sonnet 5 and GPT-5.6 Sol, Terra, and Luna pricing and model-family support.
 - Mark totals as partial when a custom or unknown model has no reliable price instead of silently charging it as another model.
 
+### Changed
+- Update GitHub build and release workflows to the Node 24-based checkout action.
+
 ### Fixed
 - Identify Codex 5-hour and 7-day limits by `window_minutes`, including the new single-weekly-window payload shape.
 - Apply OpenAI's full-request long-context pricing above 272K input tokens and stop discounting cached input for GPT-5.4 Pro and GPT-5.5 Pro.
