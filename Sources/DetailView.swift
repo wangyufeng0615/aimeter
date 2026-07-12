@@ -114,9 +114,7 @@ struct DetailView: View {
     }
 
     private func rateCard(name: String, rate: RateLimit?, emptyMessage: String = S.noData) -> some View {
-        let pct5 = rate?.fiveHourPct ?? 0
-        let pct7 = rate?.sevenDayPct ?? 0
-        let hasRate = rate != nil
+        let hasRate = rate?.fiveHourPct != nil || rate?.sevenDayPct != nil
 
         // Column widths — keep 5H and 7D bars/percentages vertically aligned
         let labelWidth: CGFloat = 20
@@ -127,48 +125,52 @@ struct DetailView: View {
             Text(name).font(Font2.header)
                 .padding(.bottom, 2)
 
-            // ── 5H row (primary: thick bar, big percentage) ──
-            HStack(alignment: .center, spacing: 8) {
-                Text("5H")
-                    .font(Font2.badge)
-                    .foregroundColor(.secondary)
-                    .frame(width: labelWidth, alignment: .leading)
+            if let pct5 = rate?.fiveHourPct {
+                // ── 5H row (primary: thick bar, big percentage) ──
+                HStack(alignment: .center, spacing: 8) {
+                    Text("5H")
+                        .font(Font2.badge)
+                        .foregroundColor(.secondary)
+                        .frame(width: labelWidth, alignment: .leading)
 
-                UsageBar(value: pct5, color: pctColor(pct5), height: 9, fillOpacity: 0.9)
+                    UsageBar(value: pct5, color: pctColor(pct5), height: 9, fillOpacity: 0.9)
 
-                percentageText(pct5, color: pctColor(pct5),
-                               numberSize: 14, unitSize: 8)
-                    .frame(width: valueWidth, alignment: .trailing)
+                    percentageText(pct5, color: pctColor(pct5),
+                                   numberSize: 14, unitSize: 8)
+                        .frame(width: valueWidth, alignment: .trailing)
+                }
+
+                // Reset time — indented under 5H bar
+                if let r = rate?.fiveHourResetsAt,
+                   let m = resetMinutesRemaining(until: r) {
+                    resetText(m, indent: labelWidth + 8)
+                }
             }
 
-            // Reset time — indented under 5H bar
-            if hasRate,
-               let r = rate?.fiveHourResetsAt,
-               let m = resetMinutesRemaining(until: r) {
-                resetText(m, indent: labelWidth + 8)
+            if rate?.fiveHourPct != nil, rate?.sevenDayPct != nil {
+                Spacer().frame(height: 2)
             }
-
-            Spacer().frame(height: 2)
 
             // ── 7D row (secondary: thin bar, smaller percentage — hierarchy via SIZE, not color dimming) ──
-            HStack(alignment: .center, spacing: 8) {
-                Text("7D")
-                    .font(Font2.badge)
-                    .foregroundColor(.secondary)
-                    .frame(width: labelWidth, alignment: .leading)
+            if let pct7 = rate?.sevenDayPct {
+                HStack(alignment: .center, spacing: 8) {
+                    Text("7D")
+                        .font(Font2.badge)
+                        .foregroundColor(.secondary)
+                        .frame(width: labelWidth, alignment: .leading)
 
-                UsageBar(value: pct7, color: pctColor(pct7), height: 5, fillOpacity: 0.85)
+                    UsageBar(value: pct7, color: pctColor(pct7), height: 5, fillOpacity: 0.85)
 
-                percentageText(pct7, color: pctColor(pct7),
-                               numberSize: 11, unitSize: 7)
-                    .frame(width: valueWidth, alignment: .trailing)
-            }
+                    percentageText(pct7, color: pctColor(pct7),
+                                   numberSize: 11, unitSize: 7)
+                        .frame(width: valueWidth, alignment: .trailing)
+                }
 
-            if hasRate,
-               pct7 > 50,
-               let r = rate?.sevenDayResetsAt,
-               let m = resetMinutesRemaining(until: r) {
-                resetText(m, indent: labelWidth + 8)
+                if pct7 > 50,
+                   let r = rate?.sevenDayResetsAt,
+                   let m = resetMinutesRemaining(until: r) {
+                    resetText(m, indent: labelWidth + 8)
+                }
             }
 
             if !hasRate {
@@ -225,7 +227,11 @@ struct DetailView: View {
             HStack(spacing: 0) {
                 StatCell(value: fmtTokens(today.tokens), label: S.tokens)
                 dot
-                StatCell(value: fmtCost(today.cost), label: S.cost)
+                StatCell(
+                    value: fmtCost(today.cost) + (today.hasUnknownCost ? "+" : ""),
+                    label: S.cost
+                )
+                .help(today.hasUnknownCost ? S.partialCost : "")
                 dot
                 StatCell(value: "\(today.messageCount)", label: S.messages)
             }
@@ -252,10 +258,11 @@ struct DetailView: View {
                                 .font(Font2.row)
                                 .foregroundColor(.secondary)
                                 .frame(width: 44, alignment: .trailing)
-                            Text(fmtCostShort(m.cost))
+                            Text(m.hasUnknownCost ? "—" : fmtCostShort(m.cost))
                                 .font(Font2.row)
                                 .foregroundColor(.secondary).opacity(0.6)
                                 .frame(width: 40, alignment: .trailing)
+                                .help(m.hasUnknownCost ? S.pricingUnavailable : "")
                         }.frame(height: 12)
                     }
                 }
@@ -305,10 +312,13 @@ struct DetailView: View {
                             .foregroundColor(.secondary)
                             .opacity(day.tokens > 0 ? 1 : 0.4)
                             .frame(width: 44, alignment: .trailing)
-                        Text(day.cost > 0 ? fmtCostShort(day.cost) : "")
+                        Text(day.hasUnknownCost
+                            ? (day.cost > 0 ? fmtCostShort(day.cost) + "+" : "—")
+                            : (day.cost > 0 ? fmtCostShort(day.cost) : ""))
                             .font(Font2.row)
                             .foregroundColor(.secondary).opacity(0.6)
                             .frame(width: 40, alignment: .trailing)
+                            .help(day.hasUnknownCost ? S.partialCost : "")
                     }.frame(height: 12)
                 }
             }

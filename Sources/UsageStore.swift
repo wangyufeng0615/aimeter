@@ -179,8 +179,8 @@ final class UsageStore: ObservableObject {
 
     // MARK: - Menu bar
 
-    var claudePct: Double { claudeRate?.fiveHourPct ?? 0 }
-    var codexPct: Double { codexRate?.fiveHourPct ?? 0 }
+    var claudePct: Double { claudeRate?.fiveHourPct ?? claudeRate?.sevenDayPct ?? 0 }
+    var codexPct: Double { codexRate?.fiveHourPct ?? codexRate?.sevenDayPct ?? 0 }
     var showCodex: Bool { Self.codexInstalled && (codexRate != nil || !cxEntries.isEmpty) }
 
     /// Single-provider fallback text (used when only one is installed)
@@ -247,6 +247,7 @@ final class UsageStore: ObservableObject {
         let date: Date
         let tokens: Int
         let cost: Double
+        let hasUnknownCost: Bool
     }
 
     enum UsageSource: String, Equatable, Hashable {
@@ -260,6 +261,7 @@ final class UsageStore: ObservableObject {
         let fullName: String
         let tokens: Int
         let cost: Double
+        let hasUnknownCost: Bool
 
         var id: String { "\(source.rawValue):\(fullName)" }
     }
@@ -268,9 +270,11 @@ final class UsageStore: ObservableObject {
         let tokens: Int
         let cost: Double
         let messageCount: Int
+        let hasUnknownCost: Bool
         let models: [ModelBreakdown]
 
-        static let empty = TodaySummary(tokens: 0, cost: 0, messageCount: 0, models: [])
+        static let empty = TodaySummary(tokens: 0, cost: 0, messageCount: 0,
+                                        hasUnknownCost: false, models: [])
     }
 
     struct UsageSummary: Equatable {
@@ -450,8 +454,9 @@ final class UsageStore: ObservableObject {
 
         var weeklyTokens = Array(repeating: 0, count: 7)
         var weeklyCosts = Array(repeating: 0.0, count: 7)
-        var claudeModels: [String: (tokens: Int, cost: Double)] = [:]
-        var codexModels: [String: (tokens: Int, cost: Double)] = [:]
+        var weeklyHasUnknownCost = Array(repeating: false, count: 7)
+        var claudeModels: [String: (tokens: Int, cost: Double, hasUnknownCost: Bool)] = [:]
+        var codexModels: [String: (tokens: Int, cost: Double, hasUnknownCost: Bool)] = [:]
         var todayMessageCount = 0
 
         func weekIndex(for date: Date) -> Int? {
@@ -465,16 +470,20 @@ final class UsageStore: ObservableObject {
             if let index = weekIndex(for: entry.timestamp) {
                 weeklyTokens[index] += entry.totalTokens
                 weeklyCosts[index] += entry.cost
+                if !Self.isSyntheticClaudeModel(entry.model) && !entry.hasKnownCost {
+                    weeklyHasUnknownCost[index] = true
+                }
             }
 
             guard entry.timestamp >= today else { continue }
             todayMessageCount += 1
             guard !Self.isSyntheticClaudeModel(entry.model) else { continue }
 
-            let current = claudeModels[entry.model] ?? (tokens: 0, cost: 0)
+            let current = claudeModels[entry.model] ?? (tokens: 0, cost: 0, hasUnknownCost: false)
             claudeModels[entry.model] = (
                 tokens: current.tokens + entry.totalTokens,
-                cost: current.cost + entry.cost
+                cost: current.cost + entry.cost,
+                hasUnknownCost: current.hasUnknownCost || !entry.hasKnownCost
             )
         }
 
@@ -482,14 +491,16 @@ final class UsageStore: ObservableObject {
             if let index = weekIndex(for: entry.timestamp) {
                 weeklyTokens[index] += entry.totalTokens
                 weeklyCosts[index] += entry.cost
+                if !entry.hasKnownCost { weeklyHasUnknownCost[index] = true }
             }
 
             guard entry.timestamp >= today else { continue }
             let model = CodexReader.shortenModel(entry.model)
-            let current = codexModels[model] ?? (tokens: 0, cost: 0)
+            let current = codexModels[model] ?? (tokens: 0, cost: 0, hasUnknownCost: false)
             codexModels[model] = (
                 tokens: current.tokens + entry.totalTokens,
-                cost: current.cost + entry.cost
+                cost: current.cost + entry.cost,
+                hasUnknownCost: current.hasUnknownCost || !entry.hasKnownCost
             )
         }
 
@@ -499,7 +510,8 @@ final class UsageStore: ObservableObject {
                 displayName: Pricing.shortenModelName($0.key),
                 fullName: $0.key,
                 tokens: $0.value.tokens,
-                cost: $0.value.cost
+                cost: $0.value.cost,
+                hasUnknownCost: $0.value.hasUnknownCost
             )
         }
         models += codexModels.map {
@@ -508,7 +520,8 @@ final class UsageStore: ObservableObject {
                 displayName: $0.key,
                 fullName: $0.key,
                 tokens: $0.value.tokens,
-                cost: $0.value.cost
+                cost: $0.value.cost,
+                hasUnknownCost: $0.value.hasUnknownCost
             )
         }
         models.sort { $0.tokens > $1.tokens }
@@ -519,13 +532,15 @@ final class UsageStore: ObservableObject {
                 id: df.string(from: date),
                 date: date,
                 tokens: weeklyTokens[index],
-                cost: weeklyCosts[index]
+                cost: weeklyCosts[index],
+                hasUnknownCost: weeklyHasUnknownCost[index]
             )
         }
         let todaySummary = TodaySummary(
             tokens: models.reduce(0) { $0 + $1.tokens },
             cost: models.reduce(0.0) { $0 + $1.cost },
             messageCount: todayMessageCount,
+            hasUnknownCost: models.contains(where: \.hasUnknownCost),
             models: models
         )
 
@@ -762,6 +777,7 @@ final class UsageStore: ObservableObject {
             cacheCreation1hTokens: min(cacheCreation1h, normalizedCacheCreationTotal),
             cacheReadTokens: usage["cache_read_input_tokens"] as? Int ?? 0,
             speed: usage["speed"] as? String,
+            inferenceGeo: usage["inference_geo"] as? String,
             costUSD: costUSD)
     }
 

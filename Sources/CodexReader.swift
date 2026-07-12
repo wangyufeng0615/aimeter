@@ -29,6 +29,10 @@ enum CodexReader {
                 cacheRead: billableCachedInputTokens
             )
         }
+
+        var hasKnownCost: Bool {
+            Pricing.hasRate(model: model)
+        }
     }
 
     private struct RawUsage {

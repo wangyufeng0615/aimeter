@@ -180,6 +180,57 @@ final class UsageStoreTests: XCTestCase {
     }
 
     @MainActor
+    func testClaudeParserAppliesUSInferencePricing() throws {
+        let projectsDir = try makeProjectsDir()
+        let logFile = projectsDir.appendingPathComponent("session.jsonl")
+        let now = Date(timeIntervalSince1970: 1_776_150_145)
+
+        try write(
+            try usageLine(
+                messageID: "m1",
+                requestID: "r1",
+                timestamp: now,
+                model: "claude-fable-5",
+                input: 1_000_000,
+                output: 0,
+                inferenceGeo: "us"
+            ) + "\n",
+            to: logFile
+        )
+
+        let store = makeStore(projectsDir: projectsDir, now: now)
+        store.refreshSynchronouslyForTesting()
+
+        XCTAssertEqual(store.ccEntries[0].inferenceGeo, "us")
+        XCTAssertEqual(store.ccEntries[0].cost, 11, accuracy: 1e-12)
+    }
+
+    @MainActor
+    func testUnknownModelMarksSummaryCostAsIncomplete() throws {
+        let projectsDir = try makeProjectsDir()
+        let logFile = projectsDir.appendingPathComponent("session.jsonl")
+        let now = Date(timeIntervalSince1970: 1_776_150_147)
+
+        try write(
+            try usageLine(
+                messageID: "m1",
+                requestID: "r1",
+                timestamp: now,
+                model: "model_api/experimental_0630",
+                input: 100
+            ) + "\n",
+            to: logFile
+        )
+
+        let store = makeStore(projectsDir: projectsDir, now: now)
+        store.refreshSynchronouslyForTesting()
+
+        XCTAssertTrue(store.usageSummary.today.hasUnknownCost)
+        XCTAssertTrue(store.usageSummary.today.models[0].hasUnknownCost)
+        XCTAssertEqual(store.usageSummary.today.cost, 0)
+    }
+
+    @MainActor
     func testCachedClaudeEntriesArePrunedWhenTheyAgeOut() throws {
         let projectsDir = try makeProjectsDir()
         let logFile = projectsDir.appendingPathComponent("session.jsonl")
@@ -287,6 +338,27 @@ final class UsageStoreTests: XCTestCase {
         XCTAssertEqual(calls, 1)
         XCTAssertEqual(store.claudeRate, rate)
         XCTAssertEqual(store.claudeRateStatus, .available)
+    }
+
+    @MainActor
+    func testCodexMenuPercentageFallsBackToWeeklyOnlyWindow() {
+        let now = Date(timeIntervalSince1970: 1_783_900_100)
+        let weeklyOnly = RateLimit(
+            fiveHourPct: nil,
+            sevenDayPct: 44,
+            fiveHourResetsAt: nil,
+            sevenDayResetsAt: now.addingTimeInterval(5 * 86400),
+            updatedAt: now
+        )
+        let store = makeStore(
+            projectsDir: tempDir,
+            now: now,
+            codexRate: weeklyOnly
+        )
+
+        store.refreshSynchronouslyForTesting()
+
+        XCTAssertEqual(store.codexPct, 44)
     }
 
     @MainActor
@@ -402,6 +474,7 @@ final class UsageStoreTests: XCTestCase {
         cacheCreation1h: Int = 0,
         cacheRead: Int = 0,
         speed: String? = nil,
+        inferenceGeo: String? = nil,
         costUSD: Double? = nil
     ) throws -> String {
         let formatter = ISO8601DateFormatter()
@@ -436,6 +509,13 @@ final class UsageStoreTests: XCTestCase {
             var message = json["message"] as? [String: Any] ?? [:]
             var usage = message["usage"] as? [String: Any] ?? [:]
             usage["speed"] = speed
+            message["usage"] = usage
+            json["message"] = message
+        }
+        if let inferenceGeo {
+            var message = json["message"] as? [String: Any] ?? [:]
+            var usage = message["usage"] as? [String: Any] ?? [:]
+            usage["inference_geo"] = inferenceGeo
             message["usage"] = usage
             json["message"] = message
         }

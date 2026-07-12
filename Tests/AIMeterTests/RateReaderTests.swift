@@ -128,6 +128,37 @@ final class RateReaderTests: XCTestCase {
         XCTAssertEqual(rate?.sevenDayResetsAt, normalizeTimestamp(1_776_700_200))
     }
 
+    func testCodexReadMapsSinglePrimarySevenDayWindow() throws {
+        let now = Date(timeIntervalSince1970: 1_783_900_000)
+        let sessionsDir = tempDir.appendingPathComponent("codex-weekly/sessions", isDirectory: true)
+        let rollout = sessionsDir.appendingPathComponent("2026/07/13/rollout-weekly.jsonl")
+        let object: [String: Any] = [
+            "timestamp": "2026-07-13T00:00:00.000Z",
+            "type": "event_msg",
+            "payload": [
+                "type": "token_count",
+                "info": [:],
+                "rate_limits": [
+                    "limit_id": "codex",
+                    "primary": [
+                        "used_percent": 44.0,
+                        "window_minutes": 10_080,
+                        "resets_at": 1_784_400_000.0,
+                    ],
+                ],
+            ],
+        ]
+        let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        try write(String(data: data, encoding: .utf8).unwrap() + "\n", to: rollout, modDate: now)
+
+        let rate = CodexRateReader.read(sessionsDir: sessionsDir, now: now)
+
+        XCTAssertNil(rate?.fiveHourPct)
+        XCTAssertEqual(rate?.sevenDayPct, 44)
+        XCTAssertNil(rate?.fiveHourResetsAt)
+        XCTAssertEqual(rate?.sevenDayResetsAt, normalizeTimestamp(1_784_400_000))
+    }
+
     func testCodexLatestRolloutCacheIsScopedToSessionsDir() throws {
         let now = Date(timeIntervalSince1970: 1_776_180_100)
         let firstDir = tempDir.appendingPathComponent("codex-first/sessions", isDirectory: true)

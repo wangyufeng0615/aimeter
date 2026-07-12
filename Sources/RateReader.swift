@@ -2,7 +2,7 @@ import Foundation
 
 /// Server-provided rate limit data
 struct RateLimit: Equatable {
-    let fiveHourPct: Double
+    let fiveHourPct: Double?
     let sevenDayPct: Double?
     let fiveHourResetsAt: Date?
     let sevenDayResetsAt: Date?
@@ -104,11 +104,12 @@ enum ClaudeRateReader {
     private static func readCache(from path: URL) -> RateLimit? {
         guard let data = try? Data(contentsOf: path),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let fiveHourPct = json["fiveHourPct"] as? Double,
               let updatedAtRaw = json["updatedAt"] as? Double
         else { return nil }
 
+        let fiveHourPct = json["fiveHourPct"] as? Double
         let sevenDayPct = json["sevenDayPct"] as? Double
+        guard fiveHourPct != nil || sevenDayPct != nil else { return nil }
         let fiveHourResetsAtRaw = json["fiveHourResetsAt"] as? Double
         let sevenDayResetsAtRaw = json["sevenDayResetsAt"] as? Double
 
@@ -122,10 +123,10 @@ enum ClaudeRateReader {
     }
 
     private static func writeCache(_ rate: RateLimit, to path: URL) {
-        var json: [String: Any] = [
-            "fiveHourPct": rate.fiveHourPct,
-            "updatedAt": rate.updatedAt.timeIntervalSince1970,
-        ]
+        var json: [String: Any] = ["updatedAt": rate.updatedAt.timeIntervalSince1970]
+        if let fiveHourPct = rate.fiveHourPct {
+            json["fiveHourPct"] = fiveHourPct
+        }
         if let sevenDayPct = rate.sevenDayPct {
             json["sevenDayPct"] = sevenDayPct
         }
@@ -202,26 +203,48 @@ enum CodexRateReader {
         }
 
         guard let rl = lastRL,
-              let primary = rl["primary"] as? [String: Any],
-              let pct = primary["used_percent"] as? Double
+              let primary = rl["primary"] as? [String: Any]
         else { return nil }
 
-        let secondaryInfo = rl["secondary"] as? [String: Any]
-        let secondary = secondaryInfo?["used_percent"] as? Double
-        var primaryResetsAt: Date? = nil
-        if let ts = primary["resets_at"] as? Double {
-            primaryResetsAt = normalizeTimestamp(ts)
+        struct Window {
+            let pct: Double
+            let minutes: Int?
+            let resetsAt: Date?
         }
-        var secondaryResetsAt: Date? = nil
-        if let ts = secondaryInfo?["resets_at"] as? Double {
-            secondaryResetsAt = normalizeTimestamp(ts)
+        func parseWindow(_ raw: [String: Any]?) -> Window? {
+            guard let raw, let pct = raw["used_percent"] as? Double else { return nil }
+            let minutes = (raw["window_minutes"] as? NSNumber)?.intValue
+            let resetsAt = (raw["resets_at"] as? Double).map(normalizeTimestamp)
+            return Window(pct: pct, minutes: minutes, resetsAt: resetsAt)
         }
+
+        let primaryWindow = parseWindow(primary)
+        let secondaryWindow = parseWindow(rl["secondary"] as? [String: Any])
+        var fiveHour: Window?
+        var sevenDay: Window?
+
+        for (window, isPrimary) in [(primaryWindow, true), (secondaryWindow, false)] {
+            guard let window else { continue }
+            switch window.minutes {
+            case 300:
+                fiveHour = window
+            case 10_080:
+                sevenDay = window
+            case nil:
+                // Backward compatibility for older rollouts that omitted the
+                // explicit window length but used primary=5H, secondary=7D.
+                if isPrimary { fiveHour = window } else { sevenDay = window }
+            default:
+                continue
+            }
+        }
+        guard fiveHour != nil || sevenDay != nil else { return nil }
 
         let modDate = (try? FileManager.default.attributesOfItem(atPath: latest.path))?[.modificationDate] as? Date ?? Date()
 
-        return RateLimit(fiveHourPct: pct, sevenDayPct: secondary,
-                         fiveHourResetsAt: primaryResetsAt,
-                         sevenDayResetsAt: secondaryResetsAt,
+        return RateLimit(fiveHourPct: fiveHour?.pct, sevenDayPct: sevenDay?.pct,
+                         fiveHourResetsAt: fiveHour?.resetsAt,
+                         sevenDayResetsAt: sevenDay?.resetsAt,
                          updatedAt: modDate)
     }
 
