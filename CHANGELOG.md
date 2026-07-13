@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.3.5] - 2026-07-13
 
 ### Added
 - Add Claude Sonnet 5 and GPT-5.6 Sol, Terra, and Luna pricing and model-family support.
