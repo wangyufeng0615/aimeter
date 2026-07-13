@@ -10,7 +10,7 @@
 - Update GitHub build and release workflows to the Node 24-based checkout action.
 
 ### Fixed
-- Identify Codex 5-hour and 7-day limits by `window_minutes`, including the new single-weekly-window payload shape.
+- Identify Codex 5-hour and 7-day limits by `window_minutes`; when the service returns only a weekly window, promote 7D to the headline display and always show its reset time.
 - Apply OpenAI's full-request long-context pricing above 272K input tokens and stop discounting cached input for GPT-5.4 Pro and GPT-5.5 Pro.
 - Apply Claude's US-only inference multiplier and current Opus fast-mode availability.
 

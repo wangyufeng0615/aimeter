@@ -359,6 +359,7 @@ final class UsageStoreTests: XCTestCase {
         store.refreshSynchronouslyForTesting()
 
         XCTAssertEqual(store.codexPct, 44)
+        XCTAssertEqual(store.codexRate?.isWeeklyOnly, true)
     }
 
     @MainActor

@@ -115,6 +115,7 @@ struct DetailView: View {
 
     private func rateCard(name: String, rate: RateLimit?, emptyMessage: String = S.noData) -> some View {
         let hasRate = rate?.fiveHourPct != nil || rate?.sevenDayPct != nil
+        let weeklyIsHeadline = rate?.isWeeklyOnly == true
 
         // Column widths — keep 5H and 7D bars/percentages vertically aligned
         let labelWidth: CGFloat = 20
@@ -151,7 +152,8 @@ struct DetailView: View {
                 Spacer().frame(height: 2)
             }
 
-            // ── 7D row (secondary: thin bar, smaller percentage — hierarchy via SIZE, not color dimming) ──
+            // The 7D window is secondary when 5H exists, but becomes the
+            // headline when the provider temporarily returns only a weekly limit.
             if let pct7 = rate?.sevenDayPct {
                 HStack(alignment: .center, spacing: 8) {
                     Text("7D")
@@ -159,14 +161,20 @@ struct DetailView: View {
                         .foregroundColor(.secondary)
                         .frame(width: labelWidth, alignment: .leading)
 
-                    UsageBar(value: pct7, color: pctColor(pct7), height: 5, fillOpacity: 0.85)
+                    UsageBar(
+                        value: pct7,
+                        color: pctColor(pct7),
+                        height: weeklyIsHeadline ? 9 : 5,
+                        fillOpacity: weeklyIsHeadline ? 0.9 : 0.85
+                    )
 
                     percentageText(pct7, color: pctColor(pct7),
-                                   numberSize: 11, unitSize: 7)
+                                   numberSize: weeklyIsHeadline ? 14 : 11,
+                                   unitSize: weeklyIsHeadline ? 8 : 7)
                         .frame(width: valueWidth, alignment: .trailing)
                 }
 
-                if pct7 > 50,
+                if (weeklyIsHeadline || pct7 > 50),
                    let r = rate?.sevenDayResetsAt,
                    let m = resetMinutesRemaining(until: r) {
                     resetText(m, indent: labelWidth + 8)

@@ -157,6 +157,8 @@ final class RateReaderTests: XCTestCase {
         XCTAssertEqual(rate?.sevenDayPct, 44)
         XCTAssertNil(rate?.fiveHourResetsAt)
         XCTAssertEqual(rate?.sevenDayResetsAt, normalizeTimestamp(1_784_400_000))
+        XCTAssertEqual(rate?.headlinePct, 44)
+        XCTAssertEqual(rate?.isWeeklyOnly, true)
     }
 
     func testCodexLatestRolloutCacheIsScopedToSessionsDir() throws {

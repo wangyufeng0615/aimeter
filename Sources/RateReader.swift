@@ -7,6 +7,11 @@ struct RateLimit: Equatable {
     let fiveHourResetsAt: Date?
     let sevenDayResetsAt: Date?
     let updatedAt: Date  // file modification time
+
+    /// The short window normally leads. When the provider temporarily omits
+    /// it, the weekly window becomes the only meaningful headline value.
+    var headlinePct: Double? { fiveHourPct ?? sevenDayPct }
+    var isWeeklyOnly: Bool { fiveHourPct == nil && sevenDayPct != nil }
 }
 
 enum ClaudeRateStatus: Equatable {

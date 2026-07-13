@@ -179,8 +179,8 @@ final class UsageStore: ObservableObject {
 
     // MARK: - Menu bar
 
-    var claudePct: Double { claudeRate?.fiveHourPct ?? claudeRate?.sevenDayPct ?? 0 }
-    var codexPct: Double { codexRate?.fiveHourPct ?? codexRate?.sevenDayPct ?? 0 }
+    var claudePct: Double { claudeRate?.headlinePct ?? 0 }
+    var codexPct: Double { codexRate?.headlinePct ?? 0 }
     var showCodex: Bool { Self.codexInstalled && (codexRate != nil || !cxEntries.isEmpty) }
 
     /// Single-provider fallback text (used when only one is installed)
