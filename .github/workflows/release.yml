@@ -20,7 +20,7 @@ jobs:
       NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
       SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           # Full history so we can commit appcast.xml back to main at the end
           fetch-depth: 0

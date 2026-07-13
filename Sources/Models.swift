@@ -10,6 +10,7 @@ struct UsageEntry: Identifiable, Equatable, Hashable {
     let cacheCreation1hTokens: Int
     let cacheReadTokens: Int
     let speed: String?
+    let inferenceGeo: String?
     let costUSD: Double?  // from JSONL if available (ccusage "auto" mode)
 
     var totalTokens: Int {
@@ -19,10 +20,15 @@ struct UsageEntry: Identifiable, Equatable, Hashable {
     var cost: Double {
         if let c = costUSD { return c }
         let cacheCreation5mTokens = max(0, cacheCreationTokens - cacheCreation1hTokens)
-        return Pricing.cost(model: model, speed: speed, input: inputTokens, output: outputTokens,
+        return Pricing.cost(model: model, speed: speed, inferenceGeo: inferenceGeo,
+                            input: inputTokens, output: outputTokens,
                             cacheWrite: cacheCreation5mTokens,
                             cacheWrite1h: cacheCreation1hTokens,
                             cacheRead: cacheReadTokens)
+    }
+
+    var hasKnownCost: Bool {
+        costUSD != nil || Pricing.hasRate(model: model, speed: speed)
     }
 }
 

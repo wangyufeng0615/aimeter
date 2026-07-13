@@ -22,6 +22,12 @@ enum S {
     static var tokens: String       { zh ? "用量" : "tokens" }
     static var cost: String         { zh ? "花费" : "cost" }
     static var messages: String     { zh ? "消息" : "messages" }
+    static var partialCost: String {
+        zh ? "部分模型没有可靠定价；显示的是已知模型花费" : "Some models lack reliable pricing; showing known cost only."
+    }
+    static var pricingUnavailable: String {
+        zh ? "此模型没有可靠定价" : "No reliable pricing is available for this model."
+    }
     static var quit: String         { zh ? "退出" : "Quit" }
     static var settings: String     { zh ? "设置" : "Settings" }
     static var title: String        { "aimeter" }

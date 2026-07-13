@@ -12,11 +12,12 @@ enum Pricing {
         let cacheWriteTiered: Double?
         let cacheReadTiered: Double?
         let cacheWrite1hTiered: Double?
+        let longContextThreshold: Int?
 
         init(input: Double, output: Double, cacheRead: Double, cacheWrite: Double,
              cacheWrite1h: Double? = nil, inputTiered: Double?, outputTiered: Double?,
              cacheWriteTiered: Double?, cacheReadTiered: Double?,
-             cacheWrite1hTiered: Double? = nil) {
+             cacheWrite1hTiered: Double? = nil, longContextThreshold: Int? = nil) {
             self.input = input
             self.output = output
             self.cacheRead = cacheRead
@@ -27,14 +28,12 @@ enum Pricing {
             self.cacheWriteTiered = cacheWriteTiered
             self.cacheReadTiered = cacheReadTiered
             self.cacheWrite1hTiered = cacheWrite1hTiered
+            self.longContextThreshold = longContextThreshold
         }
     }
 
-    // `internal` so @testable can cover the tier-boundary semantics directly.
-    static let tieredThreshold = 200_000
-
-    // Hardcoded fallback — matches LiteLLM pricing as of 2026-06.
-    private static let defaultRates: [String: Rate] = [
+    // Hardcoded fallback — verified against provider pricing as of 2026-07.
+    private static let baseDefaultRates: [String: Rate] = [
         // Claude models
         "claude-fable-5": Rate(input: 10e-6, output: 50e-6, cacheRead: 1e-6,
                                cacheWrite: 12.5e-6, cacheWrite1h: 20e-6,
@@ -57,12 +56,14 @@ enum Pricing {
         "claude-opus-4-6": Rate(input: 5e-6, output: 25e-6, cacheRead: 0.5e-6,
                                 cacheWrite: 6.25e-6, cacheWrite1h: 10e-6,
                                 inputTiered: nil, outputTiered: nil, cacheWriteTiered: nil, cacheReadTiered: nil),
-        "claude-opus-4-6-fast": Rate(input: 30e-6, output: 150e-6, cacheRead: 3e-6,
-                                     cacheWrite: 37.5e-6, cacheWrite1h: 60e-6,
-                                     inputTiered: nil, outputTiered: nil, cacheWriteTiered: nil, cacheReadTiered: nil),
         "claude-opus-4-1": Rate(input: 15e-6, output: 75e-6, cacheRead: 1.5e-6,
                                 cacheWrite: 18.75e-6, cacheWrite1h: 30e-6,
                                 inputTiered: nil, outputTiered: nil, cacheWriteTiered: nil, cacheReadTiered: nil),
+        // Introductory pricing through 2026-08-31; the daily LiteLLM refresh
+        // takes precedence when Anthropic moves it to standard $3/$15 pricing.
+        "claude-sonnet-5": Rate(input: 2e-6, output: 10e-6, cacheRead: 0.2e-6,
+                                 cacheWrite: 2.5e-6, cacheWrite1h: 4e-6,
+                                 inputTiered: nil, outputTiered: nil, cacheWriteTiered: nil, cacheReadTiered: nil),
         "claude-sonnet-4-6": Rate(input: 3e-6, output: 15e-6, cacheRead: 0.3e-6,
                                   cacheWrite: 3.75e-6, cacheWrite1h: 6e-6,
                                   inputTiered: nil, outputTiered: nil, cacheWriteTiered: nil, cacheReadTiered: nil),
@@ -71,17 +72,36 @@ enum Pricing {
                                  inputTiered: nil, outputTiered: nil, cacheWriteTiered: nil, cacheReadTiered: nil),
         // OpenAI / Codex models
         "gpt-5.4": Rate(input: 2.5e-6, output: 15e-6, cacheRead: 0.25e-6, cacheWrite: 2.5e-6,
-                        inputTiered: nil, outputTiered: nil, cacheWriteTiered: nil, cacheReadTiered: nil),
+                        inputTiered: 5e-6, outputTiered: 22.5e-6,
+                        cacheWriteTiered: 5e-6, cacheReadTiered: 0.5e-6,
+                        longContextThreshold: 272_000),
         "gpt-5.4-mini": Rate(input: 0.75e-6, output: 4.5e-6, cacheRead: 0.075e-6, cacheWrite: 0.75e-6,
                              inputTiered: nil, outputTiered: nil, cacheWriteTiered: nil, cacheReadTiered: nil),
         "gpt-5.4-nano": Rate(input: 0.2e-6, output: 1.25e-6, cacheRead: 0.02e-6, cacheWrite: 0.2e-6,
                              inputTiered: nil, outputTiered: nil, cacheWriteTiered: nil, cacheReadTiered: nil),
-        "gpt-5.4-pro": Rate(input: 30e-6, output: 180e-6, cacheRead: 3e-6, cacheWrite: 30e-6,
-                            inputTiered: nil, outputTiered: nil, cacheWriteTiered: nil, cacheReadTiered: nil),
+        "gpt-5.4-pro": Rate(input: 30e-6, output: 180e-6, cacheRead: 30e-6, cacheWrite: 30e-6,
+                            inputTiered: 60e-6, outputTiered: 270e-6,
+                            cacheWriteTiered: 60e-6, cacheReadTiered: 60e-6,
+                            longContextThreshold: 272_000),
         "gpt-5.5": Rate(input: 5e-6, output: 30e-6, cacheRead: 0.5e-6, cacheWrite: 5e-6,
-                        inputTiered: nil, outputTiered: nil, cacheWriteTiered: nil, cacheReadTiered: nil),
-        "gpt-5.5-pro": Rate(input: 30e-6, output: 180e-6, cacheRead: 3e-6, cacheWrite: 30e-6,
-                            inputTiered: nil, outputTiered: nil, cacheWriteTiered: nil, cacheReadTiered: nil),
+                        inputTiered: 10e-6, outputTiered: 45e-6,
+                        cacheWriteTiered: 10e-6, cacheReadTiered: 1e-6,
+                        longContextThreshold: 272_000),
+        "gpt-5.5-pro": Rate(input: 30e-6, output: 180e-6, cacheRead: 30e-6, cacheWrite: 30e-6,
+                            inputTiered: nil, outputTiered: nil,
+                            cacheWriteTiered: nil, cacheReadTiered: nil),
+        "gpt-5.6-sol": Rate(input: 5e-6, output: 30e-6, cacheRead: 0.5e-6, cacheWrite: 6.25e-6,
+                            inputTiered: 10e-6, outputTiered: 45e-6,
+                            cacheWriteTiered: 12.5e-6, cacheReadTiered: 1e-6,
+                            longContextThreshold: 272_000),
+        "gpt-5.6-terra": Rate(input: 2.5e-6, output: 15e-6, cacheRead: 0.25e-6, cacheWrite: 3.125e-6,
+                              inputTiered: 5e-6, outputTiered: 22.5e-6,
+                              cacheWriteTiered: 6.25e-6, cacheReadTiered: 0.5e-6,
+                              longContextThreshold: 272_000),
+        "gpt-5.6-luna": Rate(input: 1e-6, output: 6e-6, cacheRead: 0.1e-6, cacheWrite: 1.25e-6,
+                             inputTiered: 2e-6, outputTiered: 9e-6,
+                             cacheWriteTiered: 2.5e-6, cacheReadTiered: 0.2e-6,
+                             longContextThreshold: 272_000),
         "gpt-5.3-codex": Rate(input: 1.75e-6, output: 14e-6, cacheRead: 0.175e-6, cacheWrite: 1.75e-6,
                               inputTiered: nil, outputTiered: nil, cacheWriteTiered: nil, cacheReadTiered: nil),
         "gpt-5.2-codex": Rate(input: 1.75e-6, output: 14e-6, cacheRead: 0.175e-6, cacheWrite: 1.75e-6,
@@ -91,6 +111,24 @@ enum Pricing {
         "gpt-5.1-codex-mini": Rate(input: 0.25e-6, output: 2e-6, cacheRead: 0.025e-6, cacheWrite: 0.25e-6,
                                    inputTiered: nil, outputTiered: nil, cacheWriteTiered: nil, cacheReadTiered: nil),
     ]
+
+    private static var defaultRates: [String: Rate] {
+        var result = baseDefaultRates
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let standardPricingStart = calendar.date(from: DateComponents(
+            year: 2026, month: 9, day: 1
+        ))!
+        if Date() >= standardPricingStart {
+            result["claude-sonnet-5"] = Rate(
+                input: 3e-6, output: 15e-6, cacheRead: 0.3e-6,
+                cacheWrite: 3.75e-6, cacheWrite1h: 6e-6,
+                inputTiered: nil, outputTiered: nil,
+                cacheWriteTiered: nil, cacheReadTiered: nil
+            )
+        }
+        return result
+    }
 
     private static let lock = NSLock()
     private static var _rates: [String: Rate] = defaultRates
@@ -130,31 +168,65 @@ enum Pricing {
     /// Merge fetched rates with defaults (so OpenAI models always have pricing)
     private static func mergeRates(_ fetched: [String: Rate]) -> [String: Rate] {
         var result = defaultRates
-        for (k, v) in fetched { result[k] = v }
+        for (k, v) in fetched { result[k] = normalizedRate(v, family: k) }
         return result
     }
 
+    /// Keep provider-documented invariants authoritative when LiteLLM or an
+    /// older on-disk cache still contains stale values.
+    private static func normalizedRate(_ rate: Rate, family: String) -> Rate {
+        let fallback = defaultRates[family]
+        let proWithoutCacheDiscount = family == "gpt-5.4-pro" || family == "gpt-5.5-pro"
+        let noPublishedLongContextPremium = family == "gpt-5.5-pro"
+        return Rate(
+            input: rate.input,
+            output: rate.output,
+            cacheRead: proWithoutCacheDiscount ? rate.input : rate.cacheRead,
+            cacheWrite: rate.cacheWrite,
+            cacheWrite1h: rate.cacheWrite1h,
+            inputTiered: noPublishedLongContextPremium ? nil : (rate.inputTiered ?? fallback?.inputTiered),
+            outputTiered: noPublishedLongContextPremium ? nil : (rate.outputTiered ?? fallback?.outputTiered),
+            cacheWriteTiered: noPublishedLongContextPremium
+                ? nil : (rate.cacheWriteTiered ?? fallback?.cacheWriteTiered),
+            cacheReadTiered: proWithoutCacheDiscount
+                ? (noPublishedLongContextPremium ? nil : (rate.inputTiered ?? fallback?.inputTiered))
+                : (rate.cacheReadTiered ?? fallback?.cacheReadTiered),
+            cacheWrite1hTiered: noPublishedLongContextPremium
+                ? nil : (rate.cacheWrite1hTiered ?? fallback?.cacheWrite1hTiered),
+            longContextThreshold: noPublishedLongContextPremium
+                ? nil : (rate.longContextThreshold ?? fallback?.longContextThreshold)
+        )
+    }
+
     /// Full cost from input/output/cache breakdown (Claude JSONL data)
-    static func cost(model: String, speed: String? = nil, input: Int, output: Int, cacheWrite: Int,
+    static func cost(model: String, speed: String? = nil, inferenceGeo: String? = nil,
+                     input: Int, output: Int, cacheWrite: Int,
                      cacheWrite1h: Int = 0, cacheRead: Int) -> Double {
         let family = modelFamily(model)
         let billingFamily = billingFamily(family, speed: speed)
         guard let r = rates[billingFamily] ?? rates[family] else { return 0 }
-        return tiered(input, base: r.input, tier: r.inputTiered)
-             + tiered(output, base: r.output, tier: r.outputTiered)
-             + tiered(cacheWrite, base: r.cacheWrite, tier: r.cacheWriteTiered)
-             + tiered(cacheWrite1h, base: r.cacheWrite1h, tier: r.cacheWrite1hTiered)
-             + tiered(cacheRead, base: r.cacheRead, tier: r.cacheReadTiered)
+        let promptTokens = [input, cacheWrite, cacheWrite1h, cacheRead]
+            .reduce(0) { $0 + max(0, $1) }
+        let usesLongContextPricing = r.longContextThreshold.map { promptTokens > $0 } ?? false
+
+        func price(_ tokens: Int, base: Double, premium: Double?) -> Double {
+            guard tokens > 0 else { return 0 }
+            let unitPrice = usesLongContextPricing ? (premium ?? base) : base
+            return Double(tokens) * unitPrice
+        }
+
+        let subtotal = price(input, base: r.input, premium: r.inputTiered)
+            + price(output, base: r.output, premium: r.outputTiered)
+            + price(cacheWrite, base: r.cacheWrite, premium: r.cacheWriteTiered)
+            + price(cacheWrite1h, base: r.cacheWrite1h, premium: r.cacheWrite1hTiered)
+            + price(cacheRead, base: r.cacheRead, premium: r.cacheReadTiered)
+        return subtotal * geographyMultiplier(family: family, inferenceGeo: inferenceGeo)
     }
 
-    // `internal` so @testable tests can verify the tier-boundary math.
-    static func tiered(_ tokens: Int, base: Double, tier: Double?) -> Double {
-        guard tokens > 0 else { return 0 }
-        guard let tier, tokens > tieredThreshold else {
-            return Double(tokens) * base
-        }
-        return Double(min(tokens, tieredThreshold)) * base
-             + Double(tokens - tieredThreshold) * tier
+    static func hasRate(model: String, speed: String? = nil) -> Bool {
+        let family = modelFamily(model)
+        let billingFamily = billingFamily(family, speed: speed)
+        return rates[billingFamily] != nil || rates[family] != nil
     }
 
     /// Map model name to pricing key.
@@ -166,10 +238,20 @@ enum Pricing {
         if m.contains("opus-4-8") { return "claude-opus-4-8" }
         if m.contains("opus-4-7") { return "claude-opus-4-7" }
         if m.contains("opus-4-1") || m.contains("opus-4-20250514") { return "claude-opus-4-1" }
-        if m.contains("opus")   { return "claude-opus-4-6" }
-        if m.contains("sonnet") { return "claude-sonnet-4-6" }
-        if m.contains("haiku")  { return "claude-haiku-4-5" }
+        if m.contains("opus-4-6") || m.contains("opus-4-5") { return "claude-opus-4-6" }
+        if m.contains("sonnet-5") { return "claude-sonnet-5" }
+        if m.contains("sonnet-4-6") || m.contains("sonnet-4-5")
+            || m.contains("sonnet-4-20250514") { return "claude-sonnet-4-6" }
+        if m.contains("haiku-4-5") { return "claude-haiku-4-5" }
         // OpenAI — match most specific first
+        if m.contains("gpt-5.6-sol-pro") { return "unknown" }
+        if m.contains("gpt-5.6-terra")   { return "gpt-5.6-terra" }
+        if m.contains("gpt-5.6-luna")    { return "gpt-5.6-luna" }
+        if m.contains("gpt-5.6-sol")     { return "gpt-5.6-sol" }
+        if m == "gpt-5.6" || m.hasSuffix("/gpt-5.6")
+            || m.range(of: #"gpt-5\.6-20\d{6}$"#, options: .regularExpression) != nil {
+            return "gpt-5.6-sol"
+        }
         if m.contains("gpt-5.4-mini")   { return "gpt-5.4-mini" }
         if m.contains("gpt-5.4-nano")   { return "gpt-5.4-nano" }
         if m.contains("gpt-5.4-pro")    { return "gpt-5.4-pro" }
@@ -181,17 +263,28 @@ enum Pricing {
         if m.contains("5.2-codex")      { return "gpt-5.2-codex" }
         if m.contains("5.3-codex")      { return "gpt-5.3-codex" }
         if m.contains("gpt-5.4")        { return "gpt-5.4" }
-        if m.contains("gpt-5")          { return "gpt-5.4" }  // fallback for unknown gpt-5.x
-        return "claude-sonnet-4-6"  // ultimate fallback
+        return "unknown"
     }
 
     private static func billingFamily(_ family: String, speed: String?) -> String {
         guard speed?.lowercased() == "fast" else { return family }
         switch family {
-        case "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6":
+        case "claude-opus-4-8", "claude-opus-4-7":
             return "\(family)-fast"
         default:
             return family
+        }
+    }
+
+    private static func geographyMultiplier(family: String, inferenceGeo: String?) -> Double {
+        guard inferenceGeo?.lowercased() == "us" else { return 1 }
+        switch family {
+        case "claude-fable-5", "claude-mythos-5", "claude-opus-4-8",
+             "claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-5",
+             "claude-sonnet-4-6":
+            return 1.1
+        default:
+            return 1
         }
     }
 
@@ -254,10 +347,21 @@ enum Pricing {
                   let out = info["output_cost_per_token"] as? Double
             else { continue }
 
-            let rate = Rate(
+            let has272KPricing = info["input_cost_per_token_above_272k_tokens"] != nil
+                || info["output_cost_per_token_above_272k_tokens"] != nil
+                || info["cache_read_input_token_cost_above_272k_tokens"] != nil
+                || info["cache_creation_input_token_cost_above_272k_tokens"] != nil
+            let has200KPricing = info["input_cost_per_token_above_200k_tokens"] != nil
+                || info["output_cost_per_token_above_200k_tokens"] != nil
+                || info["cache_read_input_token_cost_above_200k_tokens"] != nil
+                || info["cache_creation_input_token_cost_above_200k_tokens"] != nil
+
+            let rate = normalizedRate(Rate(
                 input: inp, output: out,
-                cacheRead: info["cache_read_input_token_cost"] as? Double ?? inp * 0.1,
-                cacheWrite: info["cache_creation_input_token_cost"] as? Double ?? inp,
+                cacheRead: info["cache_read_input_token_cost"] as? Double
+                    ?? defaultRates[family]?.cacheRead ?? inp,
+                cacheWrite: info["cache_creation_input_token_cost"] as? Double
+                    ?? defaultRates[family]?.cacheWrite ?? inp,
                 cacheWrite1h: info["cache_creation_input_token_cost_above_1hr"] as? Double
                     ?? info["cache_creation_input_token_cost_1h"] as? Double,
                 inputTiered: info["input_cost_per_token_above_200k_tokens"] as? Double
@@ -269,7 +373,9 @@ enum Pricing {
                 cacheReadTiered: info["cache_read_input_token_cost_above_200k_tokens"] as? Double
                     ?? info["cache_read_input_token_cost_above_272k_tokens"] as? Double,
                 cacheWrite1hTiered: info["cache_creation_input_token_cost_above_1hr_above_200k_tokens"] as? Double
-                    ?? info["cache_creation_input_token_cost_above_1hr_above_272k_tokens"] as? Double)
+                    ?? info["cache_creation_input_token_cost_above_1hr_above_272k_tokens"] as? Double,
+                longContextThreshold: has272KPricing ? 272_000 : (has200KPricing ? 200_000 : nil)
+            ), family: family)
 
             // For Claude: prefer direct API over Bedrock/Azure
             let isDirect = k.hasPrefix("claude") || k.hasPrefix("gpt-")
@@ -305,12 +411,18 @@ enum Pricing {
             || key == "vertex_ai/claude-mythos-5@default" {
             return "claude-mythos-5"
         }
-        if key == "claude-opus-4-8" || key.hasPrefix("claude-opus-4-8-")
+        if key == "claude-opus-4-8-fast" || key.hasPrefix("claude-opus-4-8-fast-") {
+            return "claude-opus-4-8-fast"
+        }
+        if key == "claude-opus-4-7-fast" || key.hasPrefix("claude-opus-4-7-fast-") {
+            return "claude-opus-4-7-fast"
+        }
+        if key == "claude-opus-4-8" || key.hasPrefix("claude-opus-4-8-20")
             || key.hasSuffix("/claude-opus-4-8") || key.contains(".claude-opus-4-8")
             || key == "vertex_ai/claude-opus-4-8@default" {
             return "claude-opus-4-8"
         }
-        if key == "claude-opus-4-7" || key.hasPrefix("claude-opus-4-7-")
+        if key == "claude-opus-4-7" || key.hasPrefix("claude-opus-4-7-20")
             || key.hasSuffix("/claude-opus-4-7") || key.contains(".claude-opus-4-7")
             || key == "vertex_ai/claude-opus-4-7@default" {
             return "claude-opus-4-7"
@@ -322,6 +434,11 @@ enum Pricing {
         if key == "claude-opus-4-1" || key.hasPrefix("claude-opus-4-1-")
             || key == "claude-opus-4-20250514" {
             return "claude-opus-4-1"
+        }
+        if key == "claude-sonnet-5" || key.hasPrefix("claude-sonnet-5-")
+            || key.hasSuffix("/claude-sonnet-5") || key.contains(".claude-sonnet-5")
+            || key == "vertex_ai/claude-sonnet-5@default" {
+            return "claude-sonnet-5"
         }
         if key == "claude-sonnet-4-6" || key.hasPrefix("claude-sonnet-4-6-")
             || key == "claude-sonnet-4-5" || key.hasPrefix("claude-sonnet-4-5-")
@@ -345,6 +462,18 @@ enum Pricing {
         }
         if key == "gpt-5.5" || key.hasPrefix("gpt-5.5-20") {
             return "gpt-5.5"
+        }
+        if key == "gpt-5.6-sol" || key.hasPrefix("gpt-5.6-sol-20") {
+            return "gpt-5.6-sol"
+        }
+        if key == "gpt-5.6-terra" || key.hasPrefix("gpt-5.6-terra-20") {
+            return "gpt-5.6-terra"
+        }
+        if key == "gpt-5.6-luna" || key.hasPrefix("gpt-5.6-luna-20") {
+            return "gpt-5.6-luna"
+        }
+        if key == "gpt-5.6" || key.hasPrefix("gpt-5.6-20") {
+            return "gpt-5.6-sol"
         }
         if key == "gpt-5.4" || key.hasPrefix("gpt-5.4-20") {
             return "gpt-5.4"
@@ -399,7 +528,9 @@ enum Pricing {
                 cacheWrite1h: p["cacheWrite1h"] ?? fallback?.cacheWrite1h,
                 inputTiered: p["inputTiered"], outputTiered: p["outputTiered"],
                 cacheWriteTiered: p["cacheWriteTiered"], cacheReadTiered: p["cacheReadTiered"],
-                cacheWrite1hTiered: p["cacheWrite1hTiered"] ?? fallback?.cacheWrite1hTiered)
+                cacheWrite1hTiered: p["cacheWrite1hTiered"] ?? fallback?.cacheWrite1hTiered,
+                longContextThreshold: p["longContextThreshold"].map(Int.init)
+                    ?? fallback?.longContextThreshold)
         }
         return result.isEmpty ? nil : (result, -mod.timeIntervalSinceNow)
     }
@@ -417,6 +548,7 @@ enum Pricing {
             if let v = r.cacheWriteTiered { d["cacheWriteTiered"] = v }
             if let v = r.cacheReadTiered { d["cacheReadTiered"] = v }
             if let v = r.cacheWrite1hTiered { d["cacheWrite1hTiered"] = v }
+            if let v = r.longContextThreshold { d["longContextThreshold"] = Double(v) }
             json[family] = d
         }
         if let data = try? JSONSerialization.data(withJSONObject: json) {
