@@ -1,5 +1,7 @@
 import Foundation
 
+/// Single source of truth for configurable Claude/Codex roots and all paths
+/// derived from them. Callers should not rebuild these paths independently.
 enum AppPaths {
     enum Keys {
         static let claudeRoot = "claudeRootPath"

@@ -7,11 +7,14 @@ Requires Xcode Command Line Tools (`swiftc`), targeting macOS 14.0+. `make vendo
 ## Project layout
 
 ```
-Sources/        App code — see CLAUDE.md for per-file breakdown
+Sources/        App code — see AGENTS.md for per-file breakdown
 Tests/          SPM unit tests
 Package.swift   SPM manifest — tests only; the app still builds via Makefile
 Makefile        Build commands
 ```
+
+The per-file architecture, release constraints, and signing notes live in
+`AGENTS.md`.
 
 ## Making changes
 

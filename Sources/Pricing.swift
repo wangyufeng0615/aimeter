@@ -1,5 +1,8 @@
 import Foundation
 
+/// Resolve model prices from validated defaults, a bounded disk cache, and a
+/// once-per-process LiteLLM refresh. Provider-specific invariants are applied
+/// after the remote merge so stale upstream data cannot override known rules.
 enum Pricing {
     struct Rate {
         let input: Double           // cost per token

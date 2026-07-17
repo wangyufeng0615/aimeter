@@ -35,7 +35,12 @@ Updates are automatic — aimeter checks once a day and prompts inside the app. 
 
 ## Privacy
 
-Runs entirely on your machine. One outbound request: pricing data from [LiteLLM](https://github.com/BerriAI/litellm). No telemetry. See [SECURITY.md](SECURITY.md).
+Usage parsing stays on your Mac and no CLI log content is uploaded. The app
+makes two kinds of automatic outbound requests: model-pricing data from
+[LiteLLM](https://github.com/BerriAI/litellm), and the Sparkle update feed hosted
+on GitHub. If you approve an update, Sparkle downloads the signed release zip
+from GitHub. There is no product telemetry. See [SECURITY.md](SECURITY.md) for
+the exact read/write paths and network endpoints.
 
 ## Development
 

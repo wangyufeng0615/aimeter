@@ -35,7 +35,11 @@ brew tap wangyufeng0615/aimeter && brew install --cask aimeter
 
 ## 隐私
 
-完全本地运行。唯一外部请求：从 [LiteLLM](https://github.com/BerriAI/litellm) 拉取定价数据。无遥测。详见 [SECURITY.md](SECURITY.md)。
+用量解析完全在本机完成，不会上传 CLI 日志内容。应用有两类自动外部请求：从
+[LiteLLM](https://github.com/BerriAI/litellm) 拉取模型定价，以及从 GitHub
+读取 Sparkle 更新 feed。用户确认更新后，Sparkle 会从 GitHub 下载已签名的
+release zip。应用没有产品遥测。完整读写路径和网络端点见
+[SECURITY.md](SECURITY.md)。
 
 ## 开发
 

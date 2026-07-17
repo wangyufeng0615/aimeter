@@ -1,5 +1,9 @@
 import SwiftUI
 
+/// Coordinates fast rate-limit polling with slower background JSONL parsing.
+/// All published UI state is committed on the main thread; background loads
+/// operate on cache snapshots and use generation/in-flight guards to prevent
+/// stale results from overwriting a newer path configuration.
 final class UsageStore: ObservableObject {
     typealias Clock = () -> Date
     typealias RateReader = () -> RateLimit?

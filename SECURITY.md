@@ -26,7 +26,16 @@ It writes:
 
 ## Network
 
-The only outbound request is fetching model pricing from `https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json`. No telemetry, no personal data.
+Automatic outbound requests are limited to:
+
+- Model pricing from
+  `https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json`.
+- Sparkle's appcast from
+  `https://raw.githubusercontent.com/wangyufeng0615/aimeter/main/docs/appcast.xml`.
+
+After the user approves an available update, Sparkle downloads the release zip
+referenced by the signed appcast from GitHub Releases. The app does not attach
+CLI logs or usage records to these requests and has no product telemetry.
 
 ## Supported Versions
 
