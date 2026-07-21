@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.3.6] - 2026-07-21
+
+### Changed
+- Display billion-scale token usage with a compact `B` suffix, and promote rounded `1000K`/`1000M` values to the next unit.
+
 ## [0.3.5] - 2026-07-13
 
 ### Added

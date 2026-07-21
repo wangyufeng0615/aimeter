@@ -427,7 +427,9 @@ struct StatCell: View {
 }
 
 func fmtTokens(_ n: Int) -> String {
-    if n >= 1_000_000 { return String(format: "%.1fM", Double(n) / 1_000_000) }
+    // Promote before rounding would produce "1000" in the lower unit.
+    if n >= 999_950_000 { return String(format: "%.1fB", Double(n) / 1_000_000_000) }
+    if n >= 999_500 { return String(format: "%.1fM", Double(n) / 1_000_000) }
     if n >= 1_000     { return String(format: "%.0fK", Double(n) / 1_000) }
     return "\(n)"
 }
