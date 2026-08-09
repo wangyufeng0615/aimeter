@@ -59,10 +59,15 @@ enum S {
     }
 
     static func timeSpan(minutes m: Int) -> String {
-        if m >= 60 {
-            return zh ? "\(m/60)h\(m%60)m" : "\(m/60)h \(m%60)m"
-        }
-        return "\(m)m"
+        let totalMinutes = max(0, m)
+        let days = totalMinutes / (24 * 60)
+        let hours = (totalMinutes % (24 * 60)) / 60
+        let minutes = totalMinutes % 60
+        var parts: [String] = []
+        if days > 0 { parts.append(zh ? "\(days)天" : "\(days)d") }
+        if hours > 0 { parts.append("\(hours)h") }
+        if minutes > 0 || parts.isEmpty { parts.append("\(minutes)m") }
+        return parts.joined(separator: " ")
     }
 
     static func weekday(_ wd: Int) -> String {

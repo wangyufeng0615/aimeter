@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.3.7] - 2026-08-09
+
+### Fixed
+- Display long rate-limit reset intervals as days, hours, and minutes instead of an opaque total-hour count.
+- Add Claude Opus 5 standard and fast-mode pricing, and accept fully priced future versions of established Claude product lines from LiteLLM without waiting for an app update.
+- Price Sonnet 5 usage by each entry's timestamp so the September price transition cannot reprice historical August usage.
+- Recheck the 24-hour pricing cache throughout long-running app sessions and retry transient refresh failures after 15 minutes.
+- Keep incomplete future-model rates, custom relay model IDs, and retired Opus 4.7 fast mode fail-closed instead of manufacturing a plausible cost.
+- Exclude internal Claude `<synthetic>` entries from the displayed message count.
+
 ## [0.3.6] - 2026-07-21
 
 ### Changed

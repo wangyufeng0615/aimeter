@@ -23,6 +23,7 @@ enum CodexReader {
         var cost: Double {
             Pricing.cost(
                 model: model,
+                at: timestamp,
                 input: billableInputTokens,
                 output: outputTokens,
                 cacheWrite: 0,

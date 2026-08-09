@@ -480,8 +480,8 @@ final class UsageStore: ObservableObject {
             }
 
             guard entry.timestamp >= today else { continue }
-            todayMessageCount += 1
             guard !Self.isSyntheticClaudeModel(entry.model) else { continue }
+            todayMessageCount += 1
 
             let current = claudeModels[entry.model] ?? (tokens: 0, cost: 0, hasUnknownCost: false)
             claudeModels[entry.model] = (

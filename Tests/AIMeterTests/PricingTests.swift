@@ -2,6 +2,12 @@ import XCTest
 @testable import AIMeter
 
 final class PricingTests: XCTestCase {
+    private func utcDate(_ year: Int, _ month: Int, _ day: Int) -> Date {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        return calendar.date(from: DateComponents(year: year, month: month, day: day))!
+    }
+
     func testModelFamilyKeepsGPT54VariantsSeparate() {
         XCTAssertEqual(Pricing.modelFamily("gpt-5.4"), "gpt-5.4")
         XCTAssertEqual(Pricing.modelFamily("gpt-5.4-mini"), "gpt-5.4-mini")
@@ -21,6 +27,9 @@ final class PricingTests: XCTestCase {
         XCTAssertEqual(Pricing.modelFamily("claude-fable-5"), "claude-fable-5")
         XCTAssertEqual(Pricing.modelFamily("fable-5"), "claude-fable-5")
         XCTAssertEqual(Pricing.modelFamily("claude-mythos-5"), "claude-mythos-5")
+        XCTAssertEqual(Pricing.modelFamily("claude-opus-5"), "claude-opus-5")
+        XCTAssertEqual(Pricing.modelFamily("opus-5"), "claude-opus-5")
+        XCTAssertEqual(Pricing.modelFamily("claude-opus-5-20260723"), "claude-opus-5")
         XCTAssertEqual(Pricing.modelFamily("claude-opus-4-8"), "claude-opus-4-8")
         XCTAssertEqual(Pricing.modelFamily("claude-opus-4-7-20260416"), "claude-opus-4-7")
         XCTAssertEqual(Pricing.modelFamily("claude-opus-4-6"), "claude-opus-4-6")
@@ -30,6 +39,9 @@ final class PricingTests: XCTestCase {
         XCTAssertEqual(Pricing.modelFamily("claude-haiku-4-5"), "claude-haiku-4-5")
         XCTAssertEqual(Pricing.modelFamily("claude-sonnet-6"), "unknown")
         XCTAssertEqual(Pricing.modelFamily("model_api/experimental_0630"), "unknown")
+        XCTAssertEqual(Pricing.modelFamily("relay/claude-opus-5"), "unknown")
+        XCTAssertEqual(Pricing.modelFamily("model_api/gpt-5.6-sol"), "unknown")
+        XCTAssertEqual(Pricing.modelFamily("openai/gpt-5.6-sol"), "gpt-5.6-sol")
     }
 
     func testFablePricingIncludesOneHourCacheWrites() {
@@ -46,6 +58,24 @@ final class PricingTests: XCTestCase {
     }
 
     func testOpusPricingIncludesFastMode() {
+        let standard5 = Pricing.cost(
+            model: "claude-opus-5",
+            speed: "standard",
+            input: 1_000_000,
+            output: 1_000_000,
+            cacheWrite: 1_000_000,
+            cacheWrite1h: 1_000_000,
+            cacheRead: 1_000_000
+        )
+        let fast5 = Pricing.cost(
+            model: "claude-opus-5",
+            speed: "fast",
+            input: 1_000_000,
+            output: 1_000_000,
+            cacheWrite: 1_000_000,
+            cacheWrite1h: 1_000_000,
+            cacheRead: 1_000_000
+        )
         let standard48 = Pricing.cost(
             model: "claude-opus-4-8",
             speed: "standard",
@@ -74,9 +104,12 @@ final class PricingTests: XCTestCase {
             cacheRead: 1_000_000
         )
 
+        XCTAssertEqual(standard5, 46.75, accuracy: 1e-12)
+        XCTAssertEqual(fast5, 93.5, accuracy: 1e-12)
         XCTAssertEqual(standard48, 46.75, accuracy: 1e-12)
         XCTAssertEqual(fast48, 93.5, accuracy: 1e-12)
-        XCTAssertEqual(fast47, 280.5, accuracy: 1e-12)
+        XCTAssertEqual(fast47, 0, accuracy: 1e-12)
+        XCTAssertFalse(Pricing.hasRate(model: "claude-opus-4-7", speed: "fast"))
     }
 
     func testRetiredOpus46FastModeUsesStandardPricing() {
@@ -93,9 +126,19 @@ final class PricingTests: XCTestCase {
         XCTAssertEqual(cost, 46.75, accuracy: 1e-12)
     }
 
-    func testSonnet5UsesCurrentCalendarPricing() {
-        let cost = Pricing.cost(
+    func testSonnet5UsesUsageDatePricingSchedule() {
+        let introductoryCost = Pricing.cost(
             model: "claude-sonnet-5",
+            at: utcDate(2026, 8, 31),
+            input: 1_000_000,
+            output: 1_000_000,
+            cacheWrite: 1_000_000,
+            cacheWrite1h: 1_000_000,
+            cacheRead: 1_000_000
+        )
+        let standardCost = Pricing.cost(
+            model: "claude-sonnet-5",
+            at: utcDate(2026, 9, 1),
             input: 1_000_000,
             output: 1_000_000,
             cacheWrite: 1_000_000,
@@ -103,13 +146,8 @@ final class PricingTests: XCTestCase {
             cacheRead: 1_000_000
         )
 
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
-        let standardPricingStart = calendar.date(from: DateComponents(
-            year: 2026, month: 9, day: 1
-        ))!
-        let expected = Date() < standardPricingStart ? 18.7 : 28.05
-        XCTAssertEqual(cost, expected, accuracy: 1e-12)
+        XCTAssertEqual(introductoryCost, 18.7, accuracy: 1e-12)
+        XCTAssertEqual(standardCost, 28.05, accuracy: 1e-12)
     }
 
     func testClaudeUSInferenceAppliesDataResidencyMultiplier() {
@@ -123,6 +161,28 @@ final class PricingTests: XCTestCase {
         )
 
         XCTAssertEqual(cost, 11, accuracy: 1e-12)
+        XCTAssertTrue(Pricing.supportsUSInference(family: "claude-sonnet-6"))
+        XCTAssertTrue(Pricing.supportsUSInference(family: "claude-opus-4-6"))
+        XCTAssertFalse(Pricing.supportsUSInference(family: "claude-haiku-4-5"))
+    }
+
+    func testPricingRefreshPolicyRechecksStaleCacheAndBacksOffAfterFailure() {
+        XCTAssertFalse(Pricing.shouldRefreshPricing(
+            cacheAge: 60,
+            secondsSinceLastAttempt: nil
+        ))
+        XCTAssertTrue(Pricing.shouldRefreshPricing(
+            cacheAge: 24 * 60 * 60,
+            secondsSinceLastAttempt: nil
+        ))
+        XCTAssertFalse(Pricing.shouldRefreshPricing(
+            cacheAge: nil,
+            secondsSinceLastAttempt: 14 * 60
+        ))
+        XCTAssertTrue(Pricing.shouldRefreshPricing(
+            cacheAge: nil,
+            secondsSinceLastAttempt: 15 * 60
+        ))
     }
 
     func testGPT55LongContextPricingStartsAbove272KAndAppliesToFullRequest() {
@@ -230,6 +290,13 @@ final class PricingTests: XCTestCase {
                 "cache_creation_input_token_cost_above_1hr": 20e-6,
                 "cache_read_input_token_cost": 1e-6,
             ],
+            "claude-opus-5": [
+                "input_cost_per_token": 5e-6,
+                "output_cost_per_token": 25e-6,
+                "cache_creation_input_token_cost": 6.25e-6,
+                "cache_creation_input_token_cost_above_1hr": 10e-6,
+                "cache_read_input_token_cost": 0.5e-6,
+            ],
             "claude-opus-4-1": [
                 "input_cost_per_token": 15e-6,
                 "output_cost_per_token": 75e-6,
@@ -280,6 +347,8 @@ final class PricingTests: XCTestCase {
         XCTAssertEqual(parsed["claude-fable-5"]?.cacheWrite, 12.5e-6)
         XCTAssertEqual(parsed["claude-fable-5"]?.cacheWrite1h, 20e-6)
         XCTAssertEqual(parsed["claude-fable-5"]?.cacheRead, 1e-6)
+        XCTAssertEqual(parsed["claude-opus-5"]?.input, 5e-6)
+        XCTAssertEqual(parsed["claude-opus-5"]?.cacheWrite1h, 10e-6)
         XCTAssertEqual(parsed["claude-opus-4-8"]?.input, 5e-6)
         XCTAssertEqual(parsed["claude-opus-4-8"]?.cacheWrite1h, 10e-6)
         XCTAssertEqual(parsed["claude-opus-4-7"]?.input, 5e-6)
@@ -287,5 +356,44 @@ final class PricingTests: XCTestCase {
         XCTAssertEqual(parsed["claude-opus-4-6"]?.input, 5e-6)
         XCTAssertEqual(parsed["claude-opus-4-1"]?.input, 15e-6)
         XCTAssertEqual(parsed["claude-sonnet-5"]?.input, 2e-6)
+    }
+
+    func testParseLiteLLMAcceptsFutureDirectClaudeVersionWithoutNewWhitelistEntry() {
+        let parsed = Pricing.parseLiteLLM([
+            "claude-sonnet-6-20270115": [
+                "input_cost_per_token": 4e-6,
+                "output_cost_per_token": 20e-6,
+                "cache_creation_input_token_cost": 5e-6,
+                "cache_creation_input_token_cost_above_1hr": 8e-6,
+                "cache_read_input_token_cost": 0.4e-6,
+            ],
+            "claude-unverified-6": [
+                "input_cost_per_token": 1e-6,
+                "output_cost_per_token": 2e-6,
+            ],
+        ])
+
+        XCTAssertEqual(parsed["claude-sonnet-6"]?.input, 4e-6)
+        XCTAssertEqual(parsed["claude-sonnet-6"]?.output, 20e-6)
+        XCTAssertNil(parsed["claude-unverified-6"])
+        XCTAssertEqual(
+            Pricing.modelFamily(
+                "claude-sonnet-6-20270115",
+                availableFamilies: Set(parsed.keys)
+            ),
+            "claude-sonnet-6"
+        )
+    }
+
+    func testParseLiteLLMRejectsFutureClaudeRateWithIncompleteCacheContract() {
+        let parsed = Pricing.parseLiteLLM([
+            "claude-sonnet-6-20270115": [
+                "input_cost_per_token": 4e-6,
+                "output_cost_per_token": 20e-6,
+                "cache_read_input_token_cost": 0.4e-6,
+            ],
+        ])
+
+        XCTAssertNil(parsed["claude-sonnet-6"])
     }
 }

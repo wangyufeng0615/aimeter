@@ -151,7 +151,7 @@ final class UsageStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testClaudeParserUsesOpus47FastModePricing() throws {
+    func testClaudeParserMarksRetiredOpus47FastModeUnpriced() throws {
         let projectsDir = try makeProjectsDir()
         let logFile = projectsDir.appendingPathComponent("session.jsonl")
         let now = Date(timeIntervalSince1970: 1_776_150_140)
@@ -176,7 +176,9 @@ final class UsageStoreTests: XCTestCase {
         store.refreshSynchronouslyForTesting()
 
         XCTAssertEqual(store.ccEntries[0].speed, "fast")
-        XCTAssertEqual(store.ccEntries[0].cost, 280.5, accuracy: 1e-12)
+        XCTAssertEqual(store.ccEntries[0].cost, 0, accuracy: 1e-12)
+        XCTAssertFalse(store.ccEntries[0].hasKnownCost)
+        XCTAssertTrue(store.usageSummary.today.hasUnknownCost)
     }
 
     @MainActor
@@ -401,6 +403,7 @@ final class UsageStoreTests: XCTestCase {
 
         XCTAssertEqual(store.ccEntries.map(\.model), ["<synthetic>", "claude-opus-4-6"])
         XCTAssertEqual(store.ccModels.map(\.model), ["claude-opus-4-6"])
+        XCTAssertEqual(store.usageSummary.today.messageCount, 1)
     }
 
     private func makeStore(

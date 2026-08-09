@@ -1,8 +1,9 @@
 import Foundation
 
 /// Resolve model prices from validated defaults, a bounded disk cache, and a
-/// once-per-process LiteLLM refresh. Provider-specific invariants are applied
-/// after the remote merge so stale upstream data cannot override known rules.
+/// periodically refreshed LiteLLM snapshot. Provider-specific invariants are
+/// applied after the remote merge so stale upstream data cannot override known
+/// rules or reprice historical usage.
 enum Pricing {
     struct Rate {
         let input: Double           // cost per token
@@ -35,7 +36,7 @@ enum Pricing {
         }
     }
 
-    // Hardcoded fallback — verified against provider pricing as of 2026-07.
+    // Hardcoded fallback — verified against provider pricing as of 2026-08.
     private static let baseDefaultRates: [String: Rate] = [
         // Claude models
         "claude-fable-5": Rate(input: 10e-6, output: 50e-6, cacheRead: 1e-6,
@@ -44,6 +45,12 @@ enum Pricing {
         "claude-mythos-5": Rate(input: 10e-6, output: 50e-6, cacheRead: 1e-6,
                                 cacheWrite: 12.5e-6, cacheWrite1h: 20e-6,
                                 inputTiered: nil, outputTiered: nil, cacheWriteTiered: nil, cacheReadTiered: nil),
+        "claude-opus-5": Rate(input: 5e-6, output: 25e-6, cacheRead: 0.5e-6,
+                               cacheWrite: 6.25e-6, cacheWrite1h: 10e-6,
+                               inputTiered: nil, outputTiered: nil, cacheWriteTiered: nil, cacheReadTiered: nil),
+        "claude-opus-5-fast": Rate(input: 10e-6, output: 50e-6, cacheRead: 1e-6,
+                                    cacheWrite: 12.5e-6, cacheWrite1h: 20e-6,
+                                    inputTiered: nil, outputTiered: nil, cacheWriteTiered: nil, cacheReadTiered: nil),
         "claude-opus-4-8": Rate(input: 5e-6, output: 25e-6, cacheRead: 0.5e-6,
                                 cacheWrite: 6.25e-6, cacheWrite1h: 10e-6,
                                 inputTiered: nil, outputTiered: nil, cacheWriteTiered: nil, cacheReadTiered: nil),
@@ -53,17 +60,14 @@ enum Pricing {
         "claude-opus-4-7": Rate(input: 5e-6, output: 25e-6, cacheRead: 0.5e-6,
                                 cacheWrite: 6.25e-6, cacheWrite1h: 10e-6,
                                 inputTiered: nil, outputTiered: nil, cacheWriteTiered: nil, cacheReadTiered: nil),
-        "claude-opus-4-7-fast": Rate(input: 30e-6, output: 150e-6, cacheRead: 3e-6,
-                                     cacheWrite: 37.5e-6, cacheWrite1h: 60e-6,
-                                     inputTiered: nil, outputTiered: nil, cacheWriteTiered: nil, cacheReadTiered: nil),
         "claude-opus-4-6": Rate(input: 5e-6, output: 25e-6, cacheRead: 0.5e-6,
                                 cacheWrite: 6.25e-6, cacheWrite1h: 10e-6,
                                 inputTiered: nil, outputTiered: nil, cacheWriteTiered: nil, cacheReadTiered: nil),
         "claude-opus-4-1": Rate(input: 15e-6, output: 75e-6, cacheRead: 1.5e-6,
                                 cacheWrite: 18.75e-6, cacheWrite1h: 30e-6,
                                 inputTiered: nil, outputTiered: nil, cacheWriteTiered: nil, cacheReadTiered: nil),
-        // Introductory pricing through 2026-08-31; the daily LiteLLM refresh
-        // takes precedence when Anthropic moves it to standard $3/$15 pricing.
+        // Introductory pricing through 2026-08-31. `rate(for:at:)` applies the
+        // provider's effective-date schedule to each usage entry.
         "claude-sonnet-5": Rate(input: 2e-6, output: 10e-6, cacheRead: 0.2e-6,
                                  cacheWrite: 2.5e-6, cacheWrite1h: 4e-6,
                                  inputTiered: nil, outputTiered: nil, cacheWriteTiered: nil, cacheReadTiered: nil),
@@ -115,32 +119,33 @@ enum Pricing {
                                    inputTiered: nil, outputTiered: nil, cacheWriteTiered: nil, cacheReadTiered: nil),
     ]
 
-    private static var defaultRates: [String: Rate] {
-        var result = baseDefaultRates
+    private static let sonnet5StandardRate = Rate(
+        input: 3e-6, output: 15e-6, cacheRead: 0.3e-6,
+        cacheWrite: 3.75e-6, cacheWrite1h: 6e-6,
+        inputTiered: nil, outputTiered: nil,
+        cacheWriteTiered: nil, cacheReadTiered: nil
+    )
+
+    private static let sonnet5StandardPricingStart: Date = {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
-        let standardPricingStart = calendar.date(from: DateComponents(
+        return calendar.date(from: DateComponents(
             year: 2026, month: 9, day: 1
         ))!
-        if Date() >= standardPricingStart {
-            result["claude-sonnet-5"] = Rate(
-                input: 3e-6, output: 15e-6, cacheRead: 0.3e-6,
-                cacheWrite: 3.75e-6, cacheWrite1h: 6e-6,
-                inputTiered: nil, outputTiered: nil,
-                cacheWriteTiered: nil, cacheReadTiered: nil
-            )
-        }
-        return result
-    }
+    }()
 
     private static let lock = NSLock()
-    private static var _rates: [String: Rate] = defaultRates
+    private static var _rates: [String: Rate] = baseDefaultRates
     private static var rates: [String: Rate] {
         get { lock.lock(); defer { lock.unlock() }; return _rates }
         set { lock.lock(); defer { lock.unlock() }; _rates = newValue }
     }
 
-    private static var pricingLoaded = false
+    private static let refreshLock = NSLock()
+    private static var didLoadCache = false
+    private static var lastFetchAttempt: Date?
+    private static let cacheTTL: TimeInterval = 24 * 60 * 60
+    private static let failedFetchRetryInterval: TimeInterval = 15 * 60
     private static let cacheFile: URL = {
         // Prefer ~/Library/Caches; fall back to ~/.claude/
         let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
@@ -150,27 +155,50 @@ enum Pricing {
         return dir.appendingPathComponent("pricing.json")
     }()
 
-    /// Call from background thread. Only fetches once per app lifecycle.
+    /// Call from a background thread. A long-running menu app rechecks cache
+    /// freshness on every Stage 2 refresh and retries transient failures after
+    /// a bounded delay.
     static func loadFromLiteLLM() {
-        guard !pricingLoaded else { return }
-        pricingLoaded = true
+        refreshLock.lock()
+        defer { refreshLock.unlock() }
 
-        if let cached = readCache(), cached.age < 86400 {
-            rates = mergeRates(cached.rates)
+        let now = Date()
+        let cached = readCache(now: now)
+        if !didLoadCache {
+            if let cached { rates = mergeRates(cached.rates) }
+            didLoadCache = true
+        }
+
+        let secondsSinceLastAttempt = lastFetchAttempt.map { now.timeIntervalSince($0) }
+        guard shouldRefreshPricing(
+            cacheAge: cached?.age,
+            secondsSinceLastAttempt: secondsSinceLastAttempt
+        ) else {
             return
         }
+        lastFetchAttempt = now
+
         if let fetched = fetchLiteLLM() {
             let merged = mergeRates(fetched)
             rates = merged
             writeCache(merged)
-        } else if let cached = readCache() {
+        } else if let cached {
             rates = mergeRates(cached.rates)
         }
     }
 
+    static func shouldRefreshPricing(
+        cacheAge: TimeInterval?,
+        secondsSinceLastAttempt: TimeInterval?
+    ) -> Bool {
+        if let cacheAge, cacheAge >= 0, cacheAge < cacheTTL { return false }
+        guard let secondsSinceLastAttempt else { return true }
+        return secondsSinceLastAttempt >= failedFetchRetryInterval
+    }
+
     /// Merge fetched rates with defaults (so OpenAI models always have pricing)
     private static func mergeRates(_ fetched: [String: Rate]) -> [String: Rate] {
-        var result = defaultRates
+        var result = baseDefaultRates
         for (k, v) in fetched { result[k] = normalizedRate(v, family: k) }
         return result
     }
@@ -178,7 +206,7 @@ enum Pricing {
     /// Keep provider-documented invariants authoritative when LiteLLM or an
     /// older on-disk cache still contains stale values.
     private static func normalizedRate(_ rate: Rate, family: String) -> Rate {
-        let fallback = defaultRates[family]
+        let fallback = baseDefaultRates[family]
         let proWithoutCacheDiscount = family == "gpt-5.4-pro" || family == "gpt-5.5-pro"
         let noPublishedLongContextPremium = family == "gpt-5.5-pro"
         return Rate(
@@ -203,11 +231,13 @@ enum Pricing {
 
     /// Full cost from input/output/cache breakdown (Claude JSONL data)
     static func cost(model: String, speed: String? = nil, inferenceGeo: String? = nil,
+                     at usageDate: Date = Date(),
                      input: Int, output: Int, cacheWrite: Int,
                      cacheWrite1h: Int = 0, cacheRead: Int) -> Double {
         let family = modelFamily(model)
-        let billingFamily = billingFamily(family, speed: speed)
-        guard let r = rates[billingFamily] ?? rates[family] else { return 0 }
+        guard let billingFamily = billingFamily(family, speed: speed),
+              let r = rate(for: billingFamily, baseFamily: family, at: usageDate)
+        else { return 0 }
         let promptTokens = [input, cacheWrite, cacheWrite1h, cacheRead]
             .reduce(0) { $0 + max(0, $1) }
         let usesLongContextPricing = r.longContextThreshold.map { promptTokens > $0 } ?? false
@@ -228,52 +258,76 @@ enum Pricing {
 
     static func hasRate(model: String, speed: String? = nil) -> Bool {
         let family = modelFamily(model)
-        let billingFamily = billingFamily(family, speed: speed)
-        return rates[billingFamily] != nil || rates[family] != nil
+        guard let billingFamily = billingFamily(family, speed: speed) else { return false }
+        return rate(for: billingFamily, baseFamily: family, at: Date()) != nil
+    }
+
+    private static func rate(for billingFamily: String, baseFamily: String, at usageDate: Date) -> Rate? {
+        if baseFamily == "claude-sonnet-5" {
+            return usageDate >= sonnet5StandardPricingStart
+                ? sonnet5StandardRate
+                : baseDefaultRates["claude-sonnet-5"]
+        }
+        return rates[billingFamily]
     }
 
     /// Map model name to pricing key.
     static func modelFamily(_ model: String) -> String {
-        let m = model.lowercased()
-        // Claude
-        if m.contains("fable-5") { return "claude-fable-5" }
-        if m.contains("mythos-5") { return "claude-mythos-5" }
-        if m.contains("opus-4-8") { return "claude-opus-4-8" }
-        if m.contains("opus-4-7") { return "claude-opus-4-7" }
-        if m.contains("opus-4-1") || m.contains("opus-4-20250514") { return "claude-opus-4-1" }
-        if m.contains("opus-4-6") || m.contains("opus-4-5") { return "claude-opus-4-6" }
-        if m.contains("sonnet-5") { return "claude-sonnet-5" }
-        if m.contains("sonnet-4-6") || m.contains("sonnet-4-5")
-            || m.contains("sonnet-4-20250514") { return "claude-sonnet-4-6" }
-        if m.contains("haiku-4-5") { return "claude-haiku-4-5" }
-        // OpenAI — match most specific first
-        if m.contains("gpt-5.6-sol-pro") { return "unknown" }
-        if m.contains("gpt-5.6-terra")   { return "gpt-5.6-terra" }
-        if m.contains("gpt-5.6-luna")    { return "gpt-5.6-luna" }
-        if m.contains("gpt-5.6-sol")     { return "gpt-5.6-sol" }
-        if m == "gpt-5.6" || m.hasSuffix("/gpt-5.6")
-            || m.range(of: #"gpt-5\.6-20\d{6}$"#, options: .regularExpression) != nil {
+        modelFamily(model, availableFamilies: Set(rates.keys))
+    }
+
+    /// Pure resolver used by tests to verify remote-only future model support.
+    static func modelFamily(_ model: String, availableFamilies: Set<String>) -> String {
+        let m = model.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        // Claude: accept direct model IDs and explicit legacy aliases only.
+        // Arbitrary provider/relay prefixes stay unknown because their billing
+        // contract cannot be inferred from a substring.
+        if let shorthandFamily = directClaudeFamily("claude-\(m)"),
+           availableFamilies.contains(shorthandFamily) {
+            return shorthandFamily
+        }
+        if m == "claude-opus-4-20250514" { return "claude-opus-4-1" }
+        if m == "claude-opus-4-5" || m.hasPrefix("claude-opus-4-5-20") {
+            return "claude-opus-4-6"
+        }
+        if m == "claude-sonnet-4-20250514" { return "claude-sonnet-4-6" }
+        if m == "claude-sonnet-4-5" || m.hasPrefix("claude-sonnet-4-5-20") {
+            return "claude-sonnet-4-6"
+        }
+        // Future direct Claude versions can be priced without an app release
+        // once LiteLLM has supplied a validated rate for their canonical key.
+        if let family = directClaudeFamily(m), availableFamilies.contains(family) { return family }
+        // OpenAI: allow canonical IDs (and the official `openai/` prefix), but
+        // keep custom relay namespaces fail-closed.
+        let openAIModel = m.hasPrefix("openai/") ? String(m.dropFirst("openai/".count)) : m
+        if openAIModel == "gpt-5.6-sol-pro" { return "unknown" }
+        if matchesDirectModel(openAIModel, canonical: "gpt-5.6-terra") { return "gpt-5.6-terra" }
+        if matchesDirectModel(openAIModel, canonical: "gpt-5.6-luna") { return "gpt-5.6-luna" }
+        if matchesDirectModel(openAIModel, canonical: "gpt-5.6-sol") { return "gpt-5.6-sol" }
+        if matchesDirectModel(openAIModel, canonical: "gpt-5.6") {
             return "gpt-5.6-sol"
         }
-        if m.contains("gpt-5.4-mini")   { return "gpt-5.4-mini" }
-        if m.contains("gpt-5.4-nano")   { return "gpt-5.4-nano" }
-        if m.contains("gpt-5.4-pro")    { return "gpt-5.4-pro" }
-        if m.contains("gpt-5.5-pro")    { return "gpt-5.5-pro" }
-        if m.contains("gpt-5.5")        { return "gpt-5.5" }
-        if m.contains("5.1-codex-mini") { return "gpt-5.1-codex-mini" }
-        if m.contains("5.1-codex-max")  { return "gpt-5.1-codex" }  // no separate pricing, use codex
-        if m.contains("5.1-codex")      { return "gpt-5.1-codex" }
-        if m.contains("5.2-codex")      { return "gpt-5.2-codex" }
-        if m.contains("5.3-codex")      { return "gpt-5.3-codex" }
-        if m.contains("gpt-5.4")        { return "gpt-5.4" }
+        if matchesDirectModel(openAIModel, canonical: "gpt-5.4-mini") { return "gpt-5.4-mini" }
+        if matchesDirectModel(openAIModel, canonical: "gpt-5.4-nano") { return "gpt-5.4-nano" }
+        if matchesDirectModel(openAIModel, canonical: "gpt-5.4-pro") { return "gpt-5.4-pro" }
+        if matchesDirectModel(openAIModel, canonical: "gpt-5.5-pro") { return "gpt-5.5-pro" }
+        if matchesDirectModel(openAIModel, canonical: "gpt-5.5") { return "gpt-5.5" }
+        if matchesDirectModel(openAIModel, canonical: "gpt-5.1-codex-mini") { return "gpt-5.1-codex-mini" }
+        if matchesDirectModel(openAIModel, canonical: "gpt-5.1-codex-max") { return "gpt-5.1-codex" }
+        if matchesDirectModel(openAIModel, canonical: "gpt-5.1-codex") { return "gpt-5.1-codex" }
+        if matchesDirectModel(openAIModel, canonical: "gpt-5.2-codex") { return "gpt-5.2-codex" }
+        if matchesDirectModel(openAIModel, canonical: "gpt-5.3-codex") { return "gpt-5.3-codex" }
+        if matchesDirectModel(openAIModel, canonical: "gpt-5.4") { return "gpt-5.4" }
         return "unknown"
     }
 
-    private static func billingFamily(_ family: String, speed: String?) -> String {
+    private static func billingFamily(_ family: String, speed: String?) -> String? {
         guard speed?.lowercased() == "fast" else { return family }
         switch family {
-        case "claude-opus-4-8", "claude-opus-4-7":
+        case "claude-opus-5", "claude-opus-4-8":
             return "\(family)-fast"
+        case "claude-opus-4-7":
+            return nil
         default:
             return family
         }
@@ -281,14 +335,12 @@ enum Pricing {
 
     private static func geographyMultiplier(family: String, inferenceGeo: String?) -> Double {
         guard inferenceGeo?.lowercased() == "us" else { return 1 }
-        switch family {
-        case "claude-fable-5", "claude-mythos-5", "claude-opus-4-8",
-             "claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-5",
-             "claude-sonnet-4-6":
-            return 1.1
-        default:
-            return 1
-        }
+        return supportsUSInference(family: family) ? 1.1 : 1
+    }
+
+    static func supportsUSInference(family: String) -> Bool {
+        guard let version = claudeVersionComponents(family) else { return false }
+        return version.major > 4 || (version.major == 4 && version.minor >= 6)
     }
 
     static func shortenModelName(_ model: String) -> String {
@@ -350,6 +402,19 @@ enum Pricing {
                   let out = info["output_cost_per_token"] as? Double
             else { continue }
 
+            let fallbackRate = baseDefaultRates[family]
+            let cacheRead = info["cache_read_input_token_cost"] as? Double
+            let cacheWrite = info["cache_creation_input_token_cost"] as? Double
+            let cacheWrite1h = info["cache_creation_input_token_cost_above_1hr"] as? Double
+                ?? info["cache_creation_input_token_cost_1h"] as? Double
+            // A newly discovered Claude family is only safe to expose when
+            // LiteLLM supplies the full standard cache contract. Falling back
+            // to input price would manufacture a plausible but wrong total.
+            if fallbackRate == nil, directClaudeFamily(family) != nil,
+               (cacheRead == nil || cacheWrite == nil || cacheWrite1h == nil) {
+                continue
+            }
+
             let has272KPricing = info["input_cost_per_token_above_272k_tokens"] != nil
                 || info["output_cost_per_token_above_272k_tokens"] != nil
                 || info["cache_read_input_token_cost_above_272k_tokens"] != nil
@@ -361,12 +426,9 @@ enum Pricing {
 
             let rate = normalizedRate(Rate(
                 input: inp, output: out,
-                cacheRead: info["cache_read_input_token_cost"] as? Double
-                    ?? defaultRates[family]?.cacheRead ?? inp,
-                cacheWrite: info["cache_creation_input_token_cost"] as? Double
-                    ?? defaultRates[family]?.cacheWrite ?? inp,
-                cacheWrite1h: info["cache_creation_input_token_cost_above_1hr"] as? Double
-                    ?? info["cache_creation_input_token_cost_1h"] as? Double,
+                cacheRead: cacheRead ?? fallbackRate?.cacheRead ?? inp,
+                cacheWrite: cacheWrite ?? fallbackRate?.cacheWrite ?? inp,
+                cacheWrite1h: cacheWrite1h ?? fallbackRate?.cacheWrite1h,
                 inputTiered: info["input_cost_per_token_above_200k_tokens"] as? Double
                     ?? info["input_cost_per_token_above_272k_tokens"] as? Double,
                 outputTiered: info["output_cost_per_token_above_200k_tokens"] as? Double
@@ -414,11 +476,16 @@ enum Pricing {
             || key == "vertex_ai/claude-mythos-5@default" {
             return "claude-mythos-5"
         }
+        if key == "claude-opus-5-fast" || key.hasPrefix("claude-opus-5-fast-") {
+            return "claude-opus-5-fast"
+        }
         if key == "claude-opus-4-8-fast" || key.hasPrefix("claude-opus-4-8-fast-") {
             return "claude-opus-4-8-fast"
         }
-        if key == "claude-opus-4-7-fast" || key.hasPrefix("claude-opus-4-7-fast-") {
-            return "claude-opus-4-7-fast"
+        if key == "claude-opus-5" || key.hasPrefix("claude-opus-5-20")
+            || key.hasSuffix("/claude-opus-5") || key.contains(".claude-opus-5")
+            || key == "vertex_ai/claude-opus-5@default" {
+            return "claude-opus-5"
         }
         if key == "claude-opus-4-8" || key.hasPrefix("claude-opus-4-8-20")
             || key.hasSuffix("/claude-opus-4-8") || key.contains(".claude-opus-4-8")
@@ -451,6 +518,10 @@ enum Pricing {
         if key == "claude-haiku-4-5" || key.hasPrefix("claude-haiku-4-5-") {
             return "claude-haiku-4-5"
         }
+        // Keep the fail-closed boundary for arbitrary/custom models, while
+        // allowing a new version of an established direct Claude product line
+        // to flow through LiteLLM without waiting for another app release.
+        if let family = directClaudeFamily(key) { return family }
         if key == "gpt-5.4-mini" || key.hasPrefix("gpt-5.4-mini-20") {
             return "gpt-5.4-mini"
         }
@@ -497,6 +568,41 @@ enum Pricing {
         return nil
     }
 
+    private static func directClaudeFamily(_ raw: String) -> String? {
+        var candidate = raw.lowercased()
+        guard candidate.hasPrefix("claude-") else { return nil }
+        if let datedSuffix = candidate.range(
+            of: #"-\d{8}(?:[-@].*)?$"#,
+            options: .regularExpression
+        ) {
+            candidate = String(candidate[..<datedSuffix.lowerBound])
+        }
+        guard candidate.range(
+            of: #"^claude-(?:fable|mythos|opus|sonnet|haiku)-\d+(?:-\d+)*$"#,
+            options: .regularExpression
+        ) != nil else { return nil }
+        return candidate
+    }
+
+    private static func matchesDirectModel(_ model: String, canonical: String) -> Bool {
+        model == canonical
+            || model.range(
+                of: "^\(NSRegularExpression.escapedPattern(for: canonical))-20\\d{6}$",
+                options: .regularExpression
+            ) != nil
+    }
+
+    private static func claudeVersionComponents(_ family: String) -> (major: Int, minor: Int)? {
+        guard let match = family.range(
+            of: #"^claude-(?:fable|mythos|opus|sonnet|haiku)-(\d+)(?:-(\d+))?$"#,
+            options: .regularExpression
+        ) else { return nil }
+        let suffix = family[match].split(separator: "-")
+        guard let major = suffix.dropFirst(2).first.flatMap({ Int($0) }) else { return nil }
+        let minor = suffix.dropFirst(3).first.flatMap { Int($0) } ?? 0
+        return (major, minor)
+    }
+
     private static func shouldPreferLiteLLMKey(_ candidate: String, over current: String, canonical: String) -> Bool {
         if current.isEmpty { return true }
         if candidate == canonical && current != canonical { return true }
@@ -515,7 +621,7 @@ enum Pricing {
 
     // MARK: - Local cache
 
-    private static func readCache() -> (rates: [String: Rate], age: TimeInterval)? {
+    private static func readCache(now: Date = Date()) -> (rates: [String: Rate], age: TimeInterval)? {
         guard let attrs = try? FileManager.default.attributesOfItem(atPath: cacheFile.path),
               let mod = attrs[.modificationDate] as? Date,
               let data = try? Data(contentsOf: cacheFile),
@@ -524,18 +630,25 @@ enum Pricing {
 
         var result: [String: Rate] = [:]
         for (family, p) in json {
-            let fallback = defaultRates[family]
+            let fallback = baseDefaultRates[family]
+            guard let input = p["input"], let output = p["output"],
+                  let cacheRead = p["cacheRead"], let cacheWrite = p["cacheWrite"]
+            else { continue }
+            let cacheWrite1h = p["cacheWrite1h"] ?? fallback?.cacheWrite1h
+            if fallback == nil, directClaudeFamily(family) != nil, cacheWrite1h == nil {
+                continue
+            }
             result[family] = Rate(
-                input: p["input"] ?? 0, output: p["output"] ?? 0,
-                cacheRead: p["cacheRead"] ?? 0, cacheWrite: p["cacheWrite"] ?? 0,
-                cacheWrite1h: p["cacheWrite1h"] ?? fallback?.cacheWrite1h,
+                input: input, output: output,
+                cacheRead: cacheRead, cacheWrite: cacheWrite,
+                cacheWrite1h: cacheWrite1h,
                 inputTiered: p["inputTiered"], outputTiered: p["outputTiered"],
                 cacheWriteTiered: p["cacheWriteTiered"], cacheReadTiered: p["cacheReadTiered"],
                 cacheWrite1hTiered: p["cacheWrite1hTiered"] ?? fallback?.cacheWrite1hTiered,
                 longContextThreshold: p["longContextThreshold"].map(Int.init)
                     ?? fallback?.longContextThreshold)
         }
-        return result.isEmpty ? nil : (result, -mod.timeIntervalSinceNow)
+        return result.isEmpty ? nil : (result, max(0, now.timeIntervalSince(mod)))
     }
 
     private static func writeCache(_ rates: [String: Rate]) {

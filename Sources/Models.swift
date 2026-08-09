@@ -21,6 +21,7 @@ struct UsageEntry: Identifiable, Equatable, Hashable {
         if let c = costUSD { return c }
         let cacheCreation5mTokens = max(0, cacheCreationTokens - cacheCreation1hTokens)
         return Pricing.cost(model: model, speed: speed, inferenceGeo: inferenceGeo,
+                            at: timestamp,
                             input: inputTokens, output: outputTokens,
                             cacheWrite: cacheCreation5mTokens,
                             cacheWrite1h: cacheCreation1hTokens,
