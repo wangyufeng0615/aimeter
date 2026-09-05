@@ -11,28 +11,35 @@ enum CodexReader {
         let outputTokens: Int
         let reasoningOutputTokens: Int
         let totalTokens: Int
+        var cacheWriteInputTokens: Int = 0
+        var serviceTier: String? = nil
 
         private var billableCachedInputTokens: Int {
             min(inputTokens, cachedInputTokens)
         }
 
         private var billableInputTokens: Int {
-            max(0, inputTokens - billableCachedInputTokens)
+            max(0, inputTokens - billableCachedInputTokens - billableCacheWriteTokens)
+        }
+
+        private var billableCacheWriteTokens: Int {
+            min(max(0, inputTokens - billableCachedInputTokens), max(0, cacheWriteInputTokens))
         }
 
         var cost: Double {
             Pricing.cost(
                 model: model,
+                serviceTier: serviceTier,
                 at: timestamp,
                 input: billableInputTokens,
                 output: outputTokens,
-                cacheWrite: 0,
+                cacheWrite: billableCacheWriteTokens,
                 cacheRead: billableCachedInputTokens
             )
         }
 
         var hasKnownCost: Bool {
-            Pricing.hasRate(model: model)
+            Pricing.hasRate(model: model, serviceTier: serviceTier)
         }
     }
 
@@ -42,6 +49,7 @@ enum CodexReader {
         let outputTokens: Int
         let reasoningOutputTokens: Int
         let totalTokens: Int
+        let cacheWriteInputTokens: Int
     }
 
     private struct ParserState {
@@ -49,6 +57,7 @@ enum CodexReader {
         var currentModel: String?
         var previousTotal: RawUsage?
         var sequence: Int
+        var serviceTier: String?
     }
 
     private struct ParsedSession {
@@ -160,14 +169,15 @@ enum CodexReader {
                     cutoff: cutoff,
                     fromOffset: cached.size,
                     carryover: cached.trailingData,
-                    initialState: cached.state
+                    initialState: cached.state,
+                    throughOffset: size
                 ) else {
                     return nil
                 }
                 parsed = incremental
                 entries = (cached.entries + incremental.entries).filter { $0.timestamp >= cutoff }
             } else {
-                guard let full = parseSessionFile(url, cutoff: cutoff) else {
+                guard let full = parseSessionFile(url, cutoff: cutoff, throughOffset: size) else {
                     return nil
                 }
                 parsed = full
@@ -198,7 +208,8 @@ enum CodexReader {
         cutoff: Date,
         fromOffset offset: Int = 0,
         carryover: Data = Data(),
-        initialState: ParserState? = nil
+        initialState: ParserState? = nil,
+        throughOffset endOffset: Int
     ) -> ParsedSession? {
         if let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize,
            size > maxFileBytes {
@@ -216,7 +227,11 @@ enum CodexReader {
         var state = initialState ?? initialStateFor(url)
         var entries: [UsageEntry] = []
 
-        while let chunk = try? handle.read(upToCount: 64 * 1024), !chunk.isEmpty {
+        var remaining = max(0, endOffset - offset)
+        while remaining > 0 {
+            guard let chunk = try? handle.read(upToCount: min(64 * 1024, remaining)),
+                  !chunk.isEmpty else { return nil }
+            remaining -= chunk.count
             buffer.append(chunk)
             drainLines(
                 from: &buffer,
@@ -277,7 +292,21 @@ enum CodexReader {
         }
 
         if type == "turn_context", let model = payload["model"] as? String, !model.isEmpty {
+            if model != state.currentModel { state.serviceTier = nil }
             state.currentModel = model
+            if payload.keys.contains("service_tier") {
+                state.serviceTier = nonEmptyString(payload["service_tier"])
+            }
+            return true
+        }
+
+        if type == "event_msg", payload["type"] as? String == "thread_settings_applied",
+           let settings = payload["thread_settings"] as? [String: Any],
+           let model = nonEmptyString(settings["model"]) {
+            // Forked histories may contain snapshots owned by the parent.
+            if let owner = nonEmptyString(payload["thread_id"]), owner != state.sessionID { return true }
+            state.currentModel = model
+            state.serviceTier = nonEmptyString(settings["service_tier"])
             return true
         }
 
@@ -288,6 +317,7 @@ enum CodexReader {
         else { return true }
 
         if let model = extractModel(from: payload) {
+            if model != state.currentModel { state.serviceTier = nil }
             state.currentModel = model
         }
 
@@ -328,7 +358,9 @@ enum CodexReader {
                 cachedInputTokens: deltaRaw.cachedInputTokens,
                 outputTokens: deltaRaw.outputTokens,
                 reasoningOutputTokens: deltaRaw.reasoningOutputTokens,
-                totalTokens: deltaRaw.totalTokens
+                totalTokens: deltaRaw.totalTokens,
+                cacheWriteInputTokens: deltaRaw.cacheWriteInputTokens,
+                serviceTier: state.serviceTier
             )
         )
         return true
@@ -351,7 +383,8 @@ enum CodexReader {
             sessionID: url.deletingPathExtension().lastPathComponent,
             currentModel: nil,
             previousTotal: nil,
-            sequence: 0
+            sequence: 0,
+            serviceTier: nil
         )
     }
 
@@ -371,6 +404,7 @@ enum CodexReader {
         let output = intValue(dict["output_tokens"])
         let reasoning = intValue(dict["reasoning_output_tokens"])
         let explicitTotal = intValue(dict["total_tokens"])
+        let cacheWrite = intValue(dict["cache_write_input_tokens"])
         let total = explicitTotal > 0 ? explicitTotal : input + output
 
         if input == 0, cached == 0, output == 0, reasoning == 0, total == 0 {
@@ -382,17 +416,22 @@ enum CodexReader {
             cachedInputTokens: cached,
             outputTokens: output,
             reasoningOutputTokens: reasoning,
-            totalTokens: total
+            totalTokens: total,
+            cacheWriteInputTokens: cacheWrite
         )
     }
 
     private static func subtractUsage(current: RawUsage, previous: RawUsage?) -> RawUsage {
-        RawUsage(
+        // A restarted cumulative counter begins a new baseline; clamping the
+        // negative difference to zero would discard the first new request.
+        if let previous, current.totalTokens < previous.totalTokens { return current }
+        return RawUsage(
             inputTokens: max(0, current.inputTokens - (previous?.inputTokens ?? 0)),
             cachedInputTokens: max(0, current.cachedInputTokens - (previous?.cachedInputTokens ?? 0)),
             outputTokens: max(0, current.outputTokens - (previous?.outputTokens ?? 0)),
             reasoningOutputTokens: max(0, current.reasoningOutputTokens - (previous?.reasoningOutputTokens ?? 0)),
-            totalTokens: max(0, current.totalTokens - (previous?.totalTokens ?? 0))
+            totalTokens: max(0, current.totalTokens - (previous?.totalTokens ?? 0)),
+            cacheWriteInputTokens: max(0, current.cacheWriteInputTokens - (previous?.cacheWriteInputTokens ?? 0))
         )
     }
 

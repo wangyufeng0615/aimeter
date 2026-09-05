@@ -406,6 +406,27 @@ final class UsageStoreTests: XCTestCase {
         XCTAssertEqual(store.usageSummary.today.messageCount, 1)
     }
 
+    @MainActor
+    func testSameSizeInPlaceRewriteRebuildsClaudeCache() throws {
+        let projects = try makeProjectsDir()
+        let file = projects.appendingPathComponent("session.jsonl")
+        let now = Date()
+        let original = try usageLine(messageID: "m1", requestID: "r1", timestamp: now, input: 10) + "\n"
+        let replacement = try usageLine(messageID: "m2", requestID: "r2", timestamp: now, input: 20) + "\n"
+        XCTAssertEqual(original.utf8.count, replacement.utf8.count)
+        try write(original, to: file)
+        try setModificationDate(now, for: file)
+        let store = makeStore(projectsDir: projects, now: now)
+        store.refreshSynchronouslyForTesting()
+        let handle = try FileHandle(forWritingTo: file)
+        try handle.write(contentsOf: Data(replacement.utf8))
+        try handle.close()
+        try setModificationDate(now.addingTimeInterval(1), for: file)
+        store.refreshSynchronouslyForTesting()
+        XCTAssertEqual(store.ccEntries.map(\.id), ["m2:r2"])
+        XCTAssertEqual(store.lastTokenLoadStats.fullParsedFiles, 1)
+    }
+
     private func makeStore(
         projectsDir: URL,
         now: Date,

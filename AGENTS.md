@@ -30,6 +30,8 @@ SwiftUI + AppKit + Sparkle（自动更新）。app 本体用 `swiftc` 通过 Mak
 - **刷新**：rate limit 每 5 秒读一次，JSONL/summary 每 15 秒刷新；Timer 都有 10% tolerance。Claude/Codex JSONL 都有 mtime+size+fileID 缓存、增量读取、64MB 单文件上限
 - **自动更新**：Sparkle 内嵌在 `Contents/Frameworks/Sparkle.framework`，每 24h 拉一次 `https://raw.githubusercontent.com/wangyufeng0615/aimeter/main/docs/appcast.xml`；appcast 和 zip 都用 EdDSA 私钥签，app 用 `SUPublicEDKey` 验签
 
+定价来源、版本日期规则、缓存迁移与额度扫描边界见 [docs/pricing.md](docs/pricing.md)。
+
 ## 文件说明
 
 | 文件 | 职责 |
@@ -38,7 +40,7 @@ SwiftUI + AppKit + Sparkle（自动更新）。app 本体用 `swiftc` 通过 Mak
 | AppPaths.swift | Claude/Codex 根目录配置和派生路径 |
 | SetupHelper.swift | 首次启动检测 + 自动注入 statusline tee |
 | UsageStore.swift | ObservableObject，两阶段异步加载（Stage 1 rate limit → Stage 2 JSONL） |
-| RateReader.swift | 读 Claude statusline JSON + Codex 最新 session JSONL 的 rate_limits |
+| RateReader.swift | 读 Claude statusline JSON + Codex 近期 session JSONL 中最新有效的 rate_limits |
 | CodexReader.swift | 解析 Codex session JSONL 的 token_count 增量、模型和费用输入 |
 | Pricing.swift | LiteLLM 定价获取/缓存/阶梯计费 |
 | Models.swift | UsageEntry, DailyUsage, ModelUsage |

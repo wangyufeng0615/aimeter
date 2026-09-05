@@ -611,8 +611,8 @@ final class UsageStore: ObservableObject {
             } else if let cached = cache[path],
                       cached.fileID != nil,
                       cached.fileID == fileID,
-                      size >= cached.size {
-                let parsed = parseAppendedFile(url, fromOffset: cached.size, cached: cached)
+                      size > cached.size {
+                let parsed = parseAppendedFile(url, fromOffset: cached.size, throughOffset: size, cached: cached)
                 let mergedEntries = entriesInWindow(cached.entries + parsed.entries, cutoff: cutoff)
                 let updated = CachedFile(
                     mod: mod,
@@ -627,7 +627,7 @@ final class UsageStore: ObservableObject {
                 newCache[path] = updated
                 fileEntries = mergedEntries
             } else {
-                let parsed = parseWholeFile(url)
+                let parsed = parseWholeFile(url, throughOffset: size)
                 let rebuilt = CachedFile(
                     mod: mod,
                     size: size,
@@ -670,15 +670,15 @@ final class UsageStore: ObservableObject {
     private static let maxFileBytes: Int = 64 * 1024 * 1024  // 64MB hard cap per file
     private static let maxLinesPerFile = 200_000
 
-    private func parseWholeFile(_ url: URL) -> ParsedChunk {
-        readFile(url, fromOffset: 0, carryover: Data(), lineCount: 0)
+    private func parseWholeFile(_ url: URL, throughOffset: Int) -> ParsedChunk {
+        readFile(url, fromOffset: 0, throughOffset: throughOffset, carryover: Data(), lineCount: 0)
     }
 
-    private func parseAppendedFile(_ url: URL, fromOffset offset: Int, cached: CachedFile) -> ParsedChunk {
-        readFile(url, fromOffset: offset, carryover: cached.trailingData, lineCount: cached.lineCount)
+    private func parseAppendedFile(_ url: URL, fromOffset offset: Int, throughOffset: Int, cached: CachedFile) -> ParsedChunk {
+        readFile(url, fromOffset: offset, throughOffset: throughOffset, carryover: cached.trailingData, lineCount: cached.lineCount)
     }
 
-    private func readFile(_ url: URL, fromOffset offset: Int, carryover: Data, lineCount initialLineCount: Int) -> ParsedChunk {
+    private func readFile(_ url: URL, fromOffset offset: Int, throughOffset endOffset: Int, carryover: Data, lineCount initialLineCount: Int) -> ParsedChunk {
         if let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize,
            size > Self.maxFileBytes {
             return ParsedChunk(entries: [], lineCount: 0, trailingData: Data(), bytesRead: 0)
@@ -696,7 +696,8 @@ final class UsageStore: ObservableObject {
         var lines = initialLineCount
         var bytesRead = 0
 
-        while let chunk = try? handle.read(upToCount: 64 * 1024), !chunk.isEmpty {
+        while bytesRead < endOffset - offset,
+              let chunk = try? handle.read(upToCount: min(64 * 1024, endOffset - offset - bytesRead)), !chunk.isEmpty {
             bytesRead += chunk.count
             buffer.append(chunk)
             drainCompleteLines(from: &buffer, into: &entries, lineCount: &lines)

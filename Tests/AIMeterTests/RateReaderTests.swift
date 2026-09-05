@@ -133,7 +133,7 @@ final class RateReaderTests: XCTestCase {
         let sessionsDir = tempDir.appendingPathComponent("codex-weekly/sessions", isDirectory: true)
         let rollout = sessionsDir.appendingPathComponent("2026/07/13/rollout-weekly.jsonl")
         let object: [String: Any] = [
-            "timestamp": "2026-07-13T00:00:00.000Z",
+            "timestamp": ISO8601DateFormatter().string(from: now),
             "type": "event_msg",
             "payload": [
                 "type": "token_count",
@@ -191,6 +191,66 @@ final class RateReaderTests: XCTestCase {
         try FileManager.default.setAttributes([.modificationDate: modDate], ofItemAtPath: url.path)
     }
 
+    func testCodexNewEmptySessionKeepsLatestValidRateAndUpdatesWhenReady() throws {
+        let now = Date()
+        let sessions = tempDir.appendingPathComponent("sessions")
+        let old = sessions.appendingPathComponent("rollout-old.jsonl")
+        let new = sessions.appendingPathComponent("rollout-new.jsonl")
+        try write(codexRateLine(fiveHour: 32, sevenDay: 50, resetsAt: now.timeIntervalSince1970 + 300),
+                  to: old, modDate: now)
+        XCTAssertEqual(CodexRateReader.read(sessionsDir: sessions, now: now)?.headlinePct, 32)
+        try write("{\"type\":\"session_meta\"}\n", to: new, modDate: now.addingTimeInterval(61))
+        XCTAssertEqual(CodexRateReader.read(sessionsDir: sessions, now: now.addingTimeInterval(61))?.headlinePct, 32)
+        try write(codexRateLine(fiveHour: 40, sevenDay: 51, resetsAt: now.timeIntervalSince1970 + 300),
+                  to: new, modDate: now.addingTimeInterval(62))
+        XCTAssertEqual(CodexRateReader.read(sessionsDir: sessions, now: now.addingTimeInterval(62))?.headlinePct, 40)
+        XCTAssertNil(CodexRateReader.read(sessionsDir: sessions, now: now.addingTimeInterval(7 * 3600)))
+    }
+
+    func testCodexFindsRateBeyondLargeUTF8ToolOutputAndIgnoresAuxiliaryLimits() throws {
+        let now = Date()
+        let sessions = tempDir.appendingPathComponent("sessions")
+        let rate = try codexRateLine(fiveHour: 24, sevenDay: 40, resetsAt: now.timeIntervalSince1970 + 300)
+        let auxiliary = rate.replacingOccurrences(of: "\"codex\"", with: "\"codex_bengalfox\"")
+        let output = "{\"type\":\"response_item\",\"text\":\"" + String(repeating: "中文", count: 50_000) + "\"}\n"
+        try write(rate + output + auxiliary, to: sessions.appendingPathComponent("rollout-large.jsonl"), modDate: now)
+        XCTAssertEqual(CodexRateReader.read(sessionsDir: sessions, now: now)?.headlinePct, 24)
+    }
+
+    func testCodexUsesEventTimestampInsteadOfRecentlyTouchedFile() throws {
+        let now = Date()
+        let sessions = tempDir.appendingPathComponent("sessions")
+        var json = try JSONSerialization.jsonObject(with: Data(codexRateLine(
+            fiveHour: 99, sevenDay: 99, resetsAt: now.timeIntervalSince1970).utf8)) as! [String: Any]
+        json["timestamp"] = ISO8601DateFormatter().string(from: now.addingTimeInterval(-7 * 3600))
+        try writeJSON(json, to: sessions.appendingPathComponent("rollout-stale.jsonl"), modDate: now)
+        XCTAssertNil(CodexRateReader.read(sessionsDir: sessions, now: now))
+    }
+
+    func testCodexAcceptsSecondaryOnlyWeeklyAndRejectsInvalidPercentages() throws {
+        let now = Date()
+        let sessions = tempDir.appendingPathComponent("sessions")
+        let file = sessions.appendingPathComponent("rollout-weekly.jsonl")
+        try writeJSON(["rate_limits": ["limit_id": "codex", "primary": NSNull(),
+                                       "secondary": ["used_percent": 44.0, "window_minutes": 10080]]],
+                      to: file, modDate: now)
+        XCTAssertEqual(CodexRateReader.read(sessionsDir: sessions, now: now)?.headlinePct, 44)
+        try writeJSON(["rate_limits": ["primary": ["used_percent": -1.0]]],
+                      to: file, modDate: now.addingTimeInterval(1))
+        XCTAssertNil(CodexRateReader.read(sessionsDir: sessions, now: now.addingTimeInterval(1)))
+    }
+
+    func testClaudeAcceptsWeeklyOnlyAndRejectsInvalidPercentage() throws {
+        let now = Date()
+        let file = tempDir.appendingPathComponent("usage-rate.json")
+        let cache = tempDir.appendingPathComponent("rate-cache.json")
+        try writeJSON(["rate_limits": ["seven_day": ["used_percentage": 42.0],
+                                      "five_hour": ["used_percentage": -10.0]]], to: file, modDate: now)
+        let result = ClaudeRateReader.inspect(filePath: file, cachePath: cache, now: now)
+        XCTAssertEqual(result.rate?.headlinePct, 42)
+        XCTAssertTrue(result.rate?.isWeeklyOnly == true)
+    }
+
     private func write(_ text: String, to url: URL, modDate: Date) throws {
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try text.data(using: .utf8).unwrap().write(to: url)
@@ -199,7 +259,6 @@ final class RateReaderTests: XCTestCase {
 
     private func codexRateLine(fiveHour: Double, sevenDay: Double, resetsAt: Double) throws -> String {
         let object: [String: Any] = [
-            "timestamp": "2026-05-13T00:00:00.000Z",
             "type": "event_msg",
             "payload": [
                 "type": "token_count",

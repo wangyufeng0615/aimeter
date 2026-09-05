@@ -2,6 +2,80 @@ import XCTest
 @testable import AIMeter
 
 final class PricingTests: XCTestCase {
+    func testSeptemberModelsResolveAndHaveOfflineRates() {
+        for model in ["claude-fable-5-1", "claude-mythos-5-1", "gpt-6-astra"] {
+            XCTAssertEqual(Pricing.modelFamily(model), model)
+            XCTAssertTrue(Pricing.hasRate(model: model))
+        }
+        XCTAssertEqual(Pricing.modelFamily("fable-5-1"), "claude-fable-5-1")
+        XCTAssertEqual(Pricing.modelFamily("openai/gpt-6-astra-20260903"), "gpt-6-astra")
+        XCTAssertEqual(Pricing.modelFamily("gpt-6-astra-pro"), "unknown")
+        XCTAssertEqual(Pricing.modelFamily("relay/gpt-6-astra"), "unknown")
+        XCTAssertEqual(Pricing.cost(model: "claude-fable-5-1", input: 0, output: 0,
+                                    cacheWrite: 0, cacheRead: 1_000_000), 0.25, accuracy: 1e-12)
+        XCTAssertEqual(Pricing.cost(model: "claude-fable-5", input: 0, output: 0,
+                                    cacheWrite: 0, cacheRead: 1_000_000), 1, accuracy: 1e-12)
+    }
+
+    func testMinorClaudeVersionsCannotOverwriteExistingFamilies() {
+        let price: [String: Any] = ["input_cost_per_token": 10e-6, "output_cost_per_token": 50e-6,
+            "cache_read_input_token_cost": 0.25e-6, "cache_creation_input_token_cost": 12.5e-6,
+            "cache_creation_input_token_cost_above_1hr": 20e-6]
+        let parsed = Pricing.parseLiteLLM([
+            "claude-fable-5-1": price, "claude-mythos-5-1": price,
+            "claude-sonnet-5-1": price, "claude-opus-5-1": price,
+            "us.anthropic.claude-fable-5-1": price, "relay/claude-fable-5-2": price,
+            "anthropic.claude-fable-5-2": price
+        ])
+        XCTAssertEqual(Set(parsed.keys), Set(["claude-fable-5-1", "claude-mythos-5-1",
+                                              "claude-sonnet-5-1", "claude-opus-5-1", "claude-fable-5-2"]))
+        XCTAssertEqual(parsed["claude-fable-5-1"]?.cacheRead, 0.25e-6)
+        XCTAssertTrue(Pricing.parseLiteLLM(["us.anthropic.claude-fable-5": price]).isEmpty)
+    }
+
+    func testAstraFullRequestThresholdAndServiceTier() {
+        let normal = Pricing.cost(model: "gpt-6-astra", input: 72_000, output: 100,
+                                  cacheWrite: 100_000, cacheRead: 100_000)
+        let long = Pricing.cost(model: "gpt-6-astra", input: 72_001, output: 100,
+                                cacheWrite: 100_000, cacheRead: 100_000)
+        XCTAssertEqual(normal, 0.72 + 0.005 + 1.25 + 0.1, accuracy: 1e-12)
+        XCTAssertEqual(long, 1.44002 + 0.0075 + 2.5 + 0.2, accuracy: 1e-12)
+        XCTAssertEqual(Pricing.cost(model: "gpt-6-astra", serviceTier: "priority",
+                                    input: 72_001, output: 100, cacheWrite: 100_000, cacheRead: 100_000),
+                       2 * long, accuracy: 1e-12)
+        XCTAssertEqual(Pricing.cost(model: "gpt-6-astra", serviceTier: "flex",
+                                    input: 72_001, output: 100, cacheWrite: 100_000, cacheRead: 100_000),
+                       0.5 * long, accuracy: 1e-12)
+        XCTAssertFalse(Pricing.hasRate(model: "gpt-6-astra", serviceTier: "unverified"))
+    }
+
+    func testGPT56DefaultsAndSolHistoricalPromotionBoundary() {
+        for (model, input, output) in [("gpt-5.6-sol", 4.0, 20.0), ("gpt-5.6-terra", 2.0, 12.0),
+                                        ("gpt-5.6-luna", 0.2, 1.2)] {
+            XCTAssertEqual(Pricing.cost(model: model, at: utcDate(2026, 9, 6), input: 100_000,
+                                        output: 100_000, cacheWrite: 0, cacheRead: 0),
+                           (input + output) / 10, accuracy: 1e-12)
+        }
+        XCTAssertEqual(Pricing.cost(model: "gpt-5.6", at: utcDate(2026, 8, 20), input: 100_000,
+                                    output: 100_000, cacheWrite: 0, cacheRead: 0), 3.5, accuracy: 1e-12)
+        XCTAssertEqual(Pricing.cost(model: "gpt-5.6", at: utcDate(2026, 8, 21), input: 100_000,
+                                    output: 100_000, cacheWrite: 0, cacheRead: 0), 2.4, accuracy: 1e-12)
+    }
+
+    func testPricingRejectsInvalidPremiumsAndCorruptCacheThresholds() {
+        for value in [Double.nan, Double.infinity, -1, 1e100] {
+            XCTAssertTrue(Pricing.parseLiteLLM(["gpt-6-astra": [
+                "input_cost_per_token": 10e-6, "output_cost_per_token": 50e-6,
+                "input_cost_per_token_above_272k_tokens": value]]).isEmpty)
+            XCTAssertTrue(Pricing.parseCacheRates(["gpt-6-astra": [
+                "input": 10e-6, "output": 50e-6, "cacheRead": 1e-6, "cacheWrite": 12.5e-6,
+                "longContextThreshold": value]]).isEmpty)
+        }
+        let corrected = Pricing.parseCacheRates(["claude-sonnet-5": [
+            "input": 3e-6, "output": 15e-6, "cacheRead": 0.3e-6, "cacheWrite": 3.75e-6]])
+        XCTAssertEqual(corrected["claude-sonnet-5"]?.input, 2e-6)
+    }
+
     private func utcDate(_ year: Int, _ month: Int, _ day: Int) -> Date {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
@@ -126,7 +200,7 @@ final class PricingTests: XCTestCase {
         XCTAssertEqual(cost, 46.75, accuracy: 1e-12)
     }
 
-    func testSonnet5UsesUsageDatePricingSchedule() {
+    func testSonnet5CancelledSeptemberIncreaseKeepsPermanentPrice() {
         let introductoryCost = Pricing.cost(
             model: "claude-sonnet-5",
             at: utcDate(2026, 8, 31),
@@ -147,7 +221,7 @@ final class PricingTests: XCTestCase {
         )
 
         XCTAssertEqual(introductoryCost, 18.7, accuracy: 1e-12)
-        XCTAssertEqual(standardCost, 28.05, accuracy: 1e-12)
+        XCTAssertEqual(standardCost, 18.7, accuracy: 1e-12)
     }
 
     func testClaudeUSInferenceAppliesDataResidencyMultiplier() {

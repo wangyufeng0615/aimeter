@@ -64,24 +64,24 @@ enum ClaudeRateReader {
             return cachedResult(cachePath: cachePath, now: now) ?? (nil, .waitingForSessionData)
         }
 
-        guard let rl = json["rate_limits"] as? [String: Any],
-              let fiveHour = rl["five_hour"] as? [String: Any],
-              let pct = fiveHour["used_percentage"] as? Double
-        else {
+        let rl = json["rate_limits"] as? [String: Any]
+        let fiveHour = rl?["five_hour"] as? [String: Any]
+        let sevenDayInfo = rl?["seven_day"] as? [String: Any]
+        let pct = validPercentage(fiveHour?["used_percentage"])
+        let sevenDay = validPercentage(sevenDayInfo?["used_percentage"])
+        guard pct != nil || sevenDay != nil else {
             if let cached = cachedResult(cachePath: cachePath, now: now) {
                 return cached
             }
             return (nil, .rateLimitsUnavailable)
         }
 
-        let sevenDayInfo = rl["seven_day"] as? [String: Any]
-        let sevenDay = sevenDayInfo?["used_percentage"] as? Double
         var fiveHourResetsAt: Date? = nil
-        if let ts = fiveHour["resets_at"] as? Double {
+        if let ts = fiveHour?["resets_at"] as? Double, ts.isFinite {
             fiveHourResetsAt = normalizeTimestamp(ts)
         }
         var sevenDayResetsAt: Date? = nil
-        if let ts = sevenDayInfo?["resets_at"] as? Double {
+        if let ts = sevenDayInfo?["resets_at"] as? Double, ts.isFinite {
             sevenDayResetsAt = normalizeTimestamp(ts)
         }
 
@@ -106,14 +106,19 @@ enum ClaudeRateReader {
         return (cached, .available)
     }
 
+    private static func validPercentage(_ raw: Any?) -> Double? {
+        guard let pct = raw as? Double, pct.isFinite, (0...100).contains(pct) else { return nil }
+        return pct
+    }
+
     private static func readCache(from path: URL) -> RateLimit? {
         guard let data = try? Data(contentsOf: path),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let updatedAtRaw = json["updatedAt"] as? Double
         else { return nil }
 
-        let fiveHourPct = json["fiveHourPct"] as? Double
-        let sevenDayPct = json["sevenDayPct"] as? Double
+        let fiveHourPct = validPercentage(json["fiveHourPct"])
+        let sevenDayPct = validPercentage(json["sevenDayPct"])
         guard fiveHourPct != nil || sevenDayPct != nil else { return nil }
         let fiveHourResetsAtRaw = json["fiveHourResetsAt"] as? Double
         let sevenDayResetsAtRaw = json["sevenDayResetsAt"] as? Double
@@ -147,151 +152,152 @@ enum ClaudeRateReader {
             withIntermediateDirectories: true,
             attributes: nil
         )
-        try? data.write(to: path)
+        try? data.write(to: path, options: .atomic)
     }
 }
 
 // MARK: - Codex rate limits (from session JSONL)
 
 enum CodexRateReader {
-    /// Cache the "latest rollout" path so we stop stat-ing every file in
-    /// ~/.codex/sessions on each poll. The active session keeps the same URL
-    /// for its whole lifetime; a full rescan every `fullScanInterval` catches
-    /// the case where the user starts a brand-new session.
+    private struct CachedFile {
+        let mod: Date
+        let size: UInt64
+        let fileID: UInt64?
+        let rate: RateLimit?
+    }
+
     private static let cacheLock = NSLock()
-    private static var cachedLatestSessionsDir: String?
-    private static var cachedLatestURL: URL?
+    private static var cachedSessionsDir: String?
+    private static var candidates: [URL] = []
+    private static var fileCache: [String: CachedFile] = [:]
     private static var lastFullScanAt: Date?
     private static let fullScanInterval: TimeInterval = 60
+    private static let maxCandidates = 16
+    private static let maxScanBytes: UInt64 = 64 * 1024 * 1024
+    private static let maxAge: TimeInterval = 6 * 3600
+    private static let isoFull: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+    private static let isoBasic = ISO8601DateFormatter()
 
     static func read() -> RateLimit? {
-        let sessionsDir = AppPaths.codexSessionsDir
-        return read(sessionsDir: sessionsDir)
+        read(sessionsDir: AppPaths.codexSessionsDir)
     }
 
     static func read(sessionsDir: URL, now: Date = Date()) -> RateLimit? {
-        guard FileManager.default.fileExists(atPath: sessionsDir.path) else { return nil }
-
-        guard let latest = latestRollout(in: sessionsDir, now: now) else { return nil }
-
-        // Read tail of file (last 100KB) for efficiency
-        guard let handle = try? FileHandle(forReadingFrom: latest) else { return nil }
-        defer { handle.closeFile() }
-
-        let fileSize = handle.seekToEndOfFile()
-        let readSize = min(fileSize, 100_000)
-        handle.seek(toFileOffset: fileSize - readSize)
-        let rawData = handle.readData(ofLength: Int(readSize))
-        // Reading from mid-file may split a multi-byte UTF-8 char; use lossy decoding
-        let text = String(decoding: rawData, as: UTF8.self)
-
-        // Find last rate_limits event for the main "codex" family.
-        // Session JSONL interleaves multiple limit families (codex, codex_bengalfox, etc.);
-        // the subscription's primary limit is the one with limit_id == "codex".
-        var lastRL: [String: Any]? = nil
-        for line in text.split(separator: "\n").reversed() {
-            let s = String(line)
-            guard s.contains("rate_limits"), s.contains("used_percent") else { continue }
-            guard let lineData = s.data(using: .utf8),
-                  let json = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any]
-            else { continue }
-            let payload = json["payload"] as? [String: Any]
-            let topLevelRateLimits = json["rate_limits"] as? [String: Any]
-            let payloadRateLimits = payload?["rate_limits"] as? [String: Any]
-            let rl = topLevelRateLimits ?? payloadRateLimits
-            guard let rl else { continue }
-            // Skip auxiliary limit families (e.g. codex_bengalfox); only accept main "codex"
-            let limitId = rl["limit_id"] as? String ?? "codex"
-            guard limitId == "codex" else { continue }
-            lastRL = rl
-            break
+        // Rate polling runs on a background queue; serialize the small cache so
+        // changing roots cannot mix snapshots from different installations.
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        let key = sessionsDir.standardizedFileURL.path
+        if key != cachedSessionsDir {
+            cachedSessionsDir = key
+            candidates = []
+            fileCache = [:]
+            lastFullScanAt = nil
+        }
+        guard FileManager.default.fileExists(atPath: sessionsDir.path) else {
+            candidates = []
+            fileCache = [:]
+            lastFullScanAt = nil
+            return nil
+        }
+        if lastFullScanAt.map({ now.timeIntervalSince($0) >= fullScanInterval || now < $0 }) ?? true {
+            candidates = recentRollouts(in: sessionsDir)
+            let paths = Set(candidates.map(\.path))
+            fileCache = fileCache.filter { paths.contains($0.key) }
+            lastFullScanAt = now
         }
 
-        guard let rl = lastRL,
-              let primary = rl["primary"] as? [String: Any]
-        else { return nil }
-
-        struct Window {
-            let pct: Double
-            let minutes: Int?
-            let resetsAt: Date?
+        var best: RateLimit?
+        for url in candidates {
+            guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+                  let mod = attrs[.modificationDate] as? Date,
+                  let size = attrs[.size] as? NSNumber else { continue }
+            let fileID = (attrs[.systemFileNumber] as? NSNumber)?.uint64Value
+            let cached = fileCache[url.path]
+            let rate: RateLimit?
+            if let cached, cached.mod == mod, cached.size == size.uint64Value, cached.fileID == fileID {
+                rate = cached.rate
+            } else {
+                rate = readLatestRate(from: url, size: size.uint64Value, fallbackDate: mod)
+                fileCache[url.path] = CachedFile(mod: mod, size: size.uint64Value, fileID: fileID, rate: rate)
+            }
+            guard let rate, now.timeIntervalSince(rate.updatedAt) >= 0,
+                  now.timeIntervalSince(rate.updatedAt) < maxAge else { continue }
+            if best == nil || rate.updatedAt > best!.updatedAt { best = rate }
         }
-        func parseWindow(_ raw: [String: Any]?) -> Window? {
-            guard let raw, let pct = raw["used_percent"] as? Double else { return nil }
-            let minutes = (raw["window_minutes"] as? NSNumber)?.intValue
-            let resetsAt = (raw["resets_at"] as? Double).map(normalizeTimestamp)
-            return Window(pct: pct, minutes: minutes, resetsAt: resetsAt)
-        }
+        return best
+    }
 
-        let primaryWindow = parseWindow(primary)
-        let secondaryWindow = parseWindow(rl["secondary"] as? [String: Any])
-        var fiveHour: Window?
-        var sevenDay: Window?
-
-        for (window, isPrimary) in [(primaryWindow, true), (secondaryWindow, false)] {
-            guard let window else { continue }
-            switch window.minutes {
-            case 300:
-                fiveHour = window
-            case 10_080:
-                sevenDay = window
-            case nil:
-                // Backward compatibility for older rollouts that omitted the
-                // explicit window length but used primary=5H, secondary=7D.
-                if isPrimary { fiveHour = window } else { sevenDay = window }
-            default:
-                continue
+    private static func readLatestRate(from url: URL, size: UInt64, fallbackDate: Date) -> RateLimit? {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        // Scan backwards in bounded chunks: a large tool response can push the
+        // last rate event well beyond the old 100KB tail. Keep split UTF-8/JSON
+        // bytes until the complete line is available.
+        var offset = size
+        let lowerBound = size > maxScanBytes ? size - maxScanBytes : 0
+        var pending = Data()
+        while offset > lowerBound {
+            let count = Int(min(64 * 1024, offset - lowerBound))
+            offset -= UInt64(count)
+            do {
+                try handle.seek(toOffset: offset)
+                guard let chunk = try handle.read(upToCount: count), chunk.count == count else { return nil }
+                pending.insert(contentsOf: chunk, at: pending.startIndex)
+            } catch { return nil }
+            while let newline = pending.lastIndex(of: 0x0A) {
+                let line = pending[pending.index(after: newline)...]
+                if let rate = parseRateLine(Data(line), fallbackDate: fallbackDate) { return rate }
+                pending.removeSubrange(newline...)
             }
         }
-        guard fiveHour != nil || sevenDay != nil else { return nil }
-
-        let modDate = (try? FileManager.default.attributesOfItem(atPath: latest.path))?[.modificationDate] as? Date ?? Date()
-
-        return RateLimit(fiveHourPct: fiveHour?.pct, sevenDayPct: sevenDay?.pct,
-                         fiveHourResetsAt: fiveHour?.resetsAt,
-                         sevenDayResetsAt: sevenDay?.resetsAt,
-                         updatedAt: modDate)
+        return lowerBound == 0 ? parseRateLine(pending, fallbackDate: fallbackDate) : nil
     }
 
-    private static func latestRollout(in dir: URL, now: Date) -> URL? {
-        let dirKey = dir.standardizedFileURL.path
-        cacheLock.lock()
-        let cachedDir = cachedLatestSessionsDir
-        let cached = cachedLatestURL
-        let lastScan = lastFullScanAt
-        cacheLock.unlock()
+    private static func parseRateLine(_ data: Data, fallbackDate: Date) -> RateLimit? {
+        guard let text = String(data: data, encoding: .utf8),
+              text.contains("rate_limits"), text.contains("used_percent"),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        let payload = json["payload"] as? [String: Any]
+        guard let rl = (json["rate_limits"] ?? payload?["rate_limits"]) as? [String: Any],
+              (rl["limit_id"] as? String ?? "codex") == "codex" else { return nil }
 
-        let cacheFresh = lastScan.map { now.timeIntervalSince($0) < fullScanInterval } ?? false
-        if cacheFresh, cachedDir == dirKey, let cached, FileManager.default.fileExists(atPath: cached.path) {
-            return cached
+        var fiveHour: (Double, Date?)?
+        var sevenDay: (Double, Date?)?
+        for (name, defaultMinutes) in [("primary", 300), ("secondary", 10_080)] {
+            guard let raw = rl[name] as? [String: Any],
+                  let pct = raw["used_percent"] as? Double,
+                  pct.isFinite, (0...100).contains(pct) else { continue }
+            let minutes = (raw["window_minutes"] as? NSNumber)?.intValue ?? defaultMinutes
+            let reset = (raw["resets_at"] as? Double).flatMap { $0.isFinite ? normalizeTimestamp($0) : nil }
+            if minutes == 300 { fiveHour = (pct, reset) }
+            if minutes == 10_080 { sevenDay = (pct, reset) }
         }
-
-        let found = findLatestRollout(in: dir)
-        cacheLock.lock()
-        cachedLatestSessionsDir = dirKey
-        cachedLatestURL = found
-        lastFullScanAt = now
-        cacheLock.unlock()
-        return found
+        guard fiveHour != nil || sevenDay != nil else { return nil }
+        let timestamp = (json["timestamp"] as? String).flatMap { isoFull.date(from: $0) ?? isoBasic.date(from: $0) }
+        return RateLimit(fiveHourPct: fiveHour?.0, sevenDayPct: sevenDay?.0,
+                         fiveHourResetsAt: fiveHour?.1, sevenDayResetsAt: sevenDay?.1,
+                         updatedAt: timestamp ?? fallbackDate)
     }
 
-    private static func findLatestRollout(in dir: URL) -> URL? {
+    private static func recentRollouts(in dir: URL) -> [URL] {
         guard let enumerator = FileManager.default.enumerator(
             at: dir, includingPropertiesForKeys: [.contentModificationDateKey],
             options: [.skipsHiddenFiles]
-        ) else { return nil }
-
-        var latest: (url: URL, date: Date)? = nil
+        ) else { return [] }
+        var files: [(URL, Date)] = []
         while let url = enumerator.nextObject() as? URL {
-            guard url.lastPathComponent.hasPrefix("rollout-"),
-                  url.pathExtension == "jsonl" else { continue }
-            if let vals = try? url.resourceValues(forKeys: [.contentModificationDateKey]),
-               let mod = vals.contentModificationDate {
-                if latest == nil || mod > latest!.date {
-                    latest = (url, mod)
-                }
-            }
+            guard url.lastPathComponent.hasPrefix("rollout-"), url.pathExtension == "jsonl",
+                  let mod = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+            else { continue }
+            files.append((url, mod))
         }
-        return latest?.url
+        return files.sorted {
+            $0.1 == $1.1 ? $0.0.path < $1.0.path : $0.1 > $1.1
+        }.prefix(maxCandidates).map { $0.0 }
     }
 }

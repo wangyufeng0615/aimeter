@@ -227,6 +227,66 @@ final class CodexReaderTests: XCTestCase {
         return dir
     }
 
+    func testCacheWritesAndServiceTierSurviveIncrementalParsing() throws {
+        let sessions = try makeSessionsDir()
+        let file = sessions.appendingPathComponent("rollout-cache.jsonl")
+        let start = Date(timeIntervalSince1970: 1_788_600_000)
+        let usage = ["input_tokens": 100, "cached_input_tokens": 40, "cache_write_input_tokens": 60,
+                     "output_tokens": 10, "reasoning_output_tokens": 5, "total_tokens": 110]
+        let settings: [String: Any] = ["type": "event_msg", "payload": [
+            "type": "thread_settings_applied", "thread_id": "session-cache",
+            "thread_settings": ["model": "gpt-6-astra", "service_tier": "priority"]]]
+        try write([
+            try jsonLine(["type": "session_meta", "payload": ["id": "session-cache"]]),
+            try jsonLine(settings),
+            try jsonLine(["type": "turn_context", "payload": ["model": "gpt-6-astra"]]),
+            try tokenCountLine(timestamp: start, last: usage, total: usage)
+        ].joined(separator: "\n") + "\n", to: file)
+        var entries = try XCTUnwrap(CodexReader.readEntries(since: start, sessionsDir: sessions))
+        XCTAssertEqual(entries.count, 1)
+        XCTAssertEqual(entries[0].cacheWriteInputTokens, 60)
+        XCTAssertEqual(entries[0].serviceTier, "priority")
+        XCTAssertEqual(entries[0].cost, 2 * (40e-6 + 60 * 12.5e-6 + 10 * 50e-6), accuracy: 1e-12)
+        // Cumulative-only fallback must retain the cache-write delta too.
+        try append(try tokenCountLine(timestamp: start.addingTimeInterval(1), total: usage.mapValues { $0 * 2 }) + "\n", to: file)
+        entries = try XCTUnwrap(CodexReader.readEntries(since: start, sessionsDir: sessions))
+        XCTAssertEqual(entries.map(\.cacheWriteInputTokens), [60, 60])
+        XCTAssertEqual(entries[0].cost, entries[1].cost, accuracy: 1e-12)
+        // Switching models must not inherit the previous model's tier.
+        try append(try jsonLine(["type": "turn_context", "payload": ["model": "gpt-5.4-mini"]]) + "\n"
+                   + tokenCountLine(timestamp: start.addingTimeInterval(2), last: usage, total: usage.mapValues { $0 * 3 }) + "\n", to: file)
+        entries = try XCTUnwrap(CodexReader.readEntries(since: start, sessionsDir: sessions))
+        XCTAssertNil(entries.last?.serviceTier)
+        XCTAssertTrue(entries.last?.hasKnownCost == true)
+    }
+
+    func testCounterRestartDoesNotDropFirstNewRequestOrDuplicateRepeat() throws {
+        let sessions = try makeSessionsDir()
+        let file = sessions.appendingPathComponent("rollout-reset.jsonl")
+        let start = Date(timeIntervalSince1970: 1_788_600_000)
+        let big = ["input_tokens": 1000, "output_tokens": 100, "total_tokens": 1100]
+        let small = ["input_tokens": 100, "output_tokens": 10, "total_tokens": 110]
+        try write([
+            try jsonLine(["type": "turn_context", "payload": ["model": "gpt-6-astra"]]),
+            try tokenCountLine(timestamp: start, last: big, total: big),
+            try tokenCountLine(timestamp: start.addingTimeInterval(1), last: small, total: small),
+            try tokenCountLine(timestamp: start.addingTimeInterval(2), last: small, total: small)
+        ].joined(separator: "\n") + "\n", to: file)
+        let entries = try XCTUnwrap(CodexReader.readEntries(since: start, sessionsDir: sessions))
+        XCTAssertEqual(entries.map(\.totalTokens), [1100, 110])
+    }
+
+    func testUnknownServiceTierMarksCostIncomplete() throws {
+        let sessions = try makeSessionsDir()
+        let file = sessions.appendingPathComponent("rollout-tier.jsonl")
+        let start = Date(timeIntervalSince1970: 1_788_600_000)
+        try write(try jsonLine(["type": "turn_context", "payload": ["model": "gpt-6-astra", "service_tier": "custom"]])
+                  + "\n" + tokenCountLine(timestamp: start, total: ["input_tokens": 100, "total_tokens": 100]) + "\n", to: file)
+        let entry = try XCTUnwrap(CodexReader.readEntries(since: start, sessionsDir: sessions)?.first)
+        XCTAssertFalse(entry.hasKnownCost)
+        XCTAssertEqual(entry.cost, 0)
+    }
+
     private func write(_ text: String, to url: URL) throws {
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         guard let data = text.data(using: .utf8) else {

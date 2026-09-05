@@ -26,9 +26,11 @@ SwiftUI + AppKit + Sparkle（自动更新）。app 本体用 `swiftc` 通过 Mak
   - Claude Code：`~/.claude/projects/**/*.jsonl`（JSONL 对话日志）+ `~/.claude/usage-rate.json`（statusline hook 写入的 rate limit）
   - Codex：`~/.codex/sessions/**/rollout-*.jsonl`（`token_count` 使用量增量 + `rate_limits` 百分比）
 - **路径层**：默认读 `~/.claude` / `~/.codex`，Settings 的 Paths 可改根目录；`AppPaths` 统一派生 projects、sessions、settings、rate cache 路径
-- **定价层**：启动时从 LiteLLM GitHub 拉取最新定价，缓存到 `~/Library/Caches/com.aimeter.app/pricing.json`（24h TTL），离线用硬编码默认值
+- **定价层**：从 LiteLLM GitHub 拉取最新定价，缓存到 `~/Library/Caches/com.aimeter.app/pricing.json`（24h TTL），离线用硬编码默认值
 - **刷新**：rate limit 每 5 秒读一次，JSONL/summary 每 15 秒刷新；Timer 都有 10% tolerance。Claude/Codex JSONL 都有 mtime+size+fileID 缓存、增量读取、64MB 单文件上限
 - **自动更新**：Sparkle 内嵌在 `Contents/Frameworks/Sparkle.framework`，每 24h 拉一次 `https://raw.githubusercontent.com/wangyufeng0615/aimeter/main/docs/appcast.xml`；appcast 和 zip 都用 EdDSA 私钥签，app 用 `SUPublicEDKey` 验签
+
+定价来源、版本日期规则、缓存迁移与额度扫描边界见 [docs/pricing.md](docs/pricing.md)。
 
 ## 文件说明
 
@@ -38,7 +40,7 @@ SwiftUI + AppKit + Sparkle（自动更新）。app 本体用 `swiftc` 通过 Mak
 | AppPaths.swift | Claude/Codex 根目录配置和派生路径 |
 | SetupHelper.swift | 首次启动检测 + 自动注入 statusline tee |
 | UsageStore.swift | ObservableObject，两阶段异步加载（Stage 1 rate limit → Stage 2 JSONL） |
-| RateReader.swift | 读 Claude statusline JSON + Codex 最新 session JSONL 的 rate_limits |
+| RateReader.swift | 读 Claude statusline JSON + Codex 近期 session JSONL 中最新有效的 rate_limits |
 | CodexReader.swift | 解析 Codex session JSONL 的 token_count 增量、模型和费用输入 |
 | Pricing.swift | LiteLLM 定价获取/缓存/阶梯计费 |
 | Models.swift | UsageEntry, DailyUsage, ModelUsage |
@@ -62,7 +64,7 @@ SwiftUI + AppKit + Sparkle（自动更新）。app 本体用 `swiftc` 通过 Mak
 ## 注意事项
 
 - `Pricing.rates` 用 `NSLock` 保护，因为后台线程写、主线程读
-- `Pricing.loadFromLiteLLM()` 用信号量同步阻塞，但 app 生命周期内只调用一次（`pricingLoaded` 标志）
+- `Pricing.loadFromLiteLLM()` 在后台同步等待；24h 缓存过期后刷新，失败后 15 分钟重试
 - 修改 Claude/Codex 根目录会 bump `loadGeneration`、清空缓存并重新加载，防止旧路径结果回写到新路径 UI
 - 修改 settings.json 用 `.atomic` 写入，防止崩溃留下损坏文件
 - Info.plist 的 `LSUIElement=true` 隐藏 Dock 图标，`LSMinimumSystemVersion=14.0`

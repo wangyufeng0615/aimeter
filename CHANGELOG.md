@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.8] - 2026-09-06
+
+### Fixed
+- Add GPT-6 Astra, Claude Fable 5.1, and Mythos 5.1 pricing, including Astra's long-context rates and the lower Claude 5.1 cache-read price.
+- Keep complete Claude minor versions separate when importing LiteLLM prices; reject regional or custom relay prices as global API fallbacks.
+- Remove the cancelled Sonnet 5 September price increase. Refresh GPT-5.6 offline defaults and preserve Sol's launch pricing for usage before its August 21 promotion.
+- Include Codex cache-write tokens and recorded GPT-5.6/Astra priority or flex tiers in cost estimates; flag unverified service tiers as partial cost.
+- Keep valid Codex limits when another session starts without a rate event, scan past large tool outputs, and expire snapshots by event time instead of file modification time.
+- Support secondary-only Codex and weekly-only Claude limits, and reject invalid percentages.
+- Avoid dropping Codex usage when cumulative counters restart, reparse same-size Claude log rewrites, and bound incremental reads to the recorded file size.
+- Invalidate legacy pricing caches and validate cached prices, tier prices, and thresholds before use.
+
 ## [0.3.7] - 2026-08-09
 
 ### Fixed
