@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.3.9] - 2026-09-22
+
+### Fixed
+- Keep active Codex rate-limit windows visible after Mac sleep, refresh immediately on wake, and show unavailable data as unknown instead of `0%`.
+
 ## [0.3.8] - 2026-09-06
 
 ### Fixed

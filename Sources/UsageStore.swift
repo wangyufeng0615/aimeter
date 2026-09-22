@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 /// Coordinates fast rate-limit polling with slower background JSONL parsing.
 /// All published UI state is committed on the main thread; background loads
@@ -81,6 +82,8 @@ final class UsageStore: ObservableObject {
     private let codexEntriesReader: CodexEntriesReader
     private let pricingLoader: PricingLoader
     private var defaultsObserver: NSObjectProtocol?
+    private let wakeNotificationCenter: NotificationCenter
+    private var wakeObserver: NSObjectProtocol?
 
     // File cache lives on the main thread; captured into Stage 2 by value,
     // written back on main when Stage 2 completes. `stage2InFlight` prevents
@@ -121,7 +124,9 @@ final class UsageStore: ObservableObject {
         claudeRateSnapshotReader: @escaping ClaudeRateSnapshotReader = { ClaudeRateReader.inspect() },
         codexRateReader: @escaping RateReader = CodexRateReader.read,
         codexEntriesReader: @escaping CodexEntriesReader = CodexReader.readEntries,
-        pricingLoader: @escaping PricingLoader = Pricing.loadFromLiteLLM
+        pricingLoader: @escaping PricingLoader = Pricing.loadFromLiteLLM,
+        wakeNotificationCenter: NotificationCenter = NSWorkspace.shared.notificationCenter,
+        wakeNotificationName: Notification.Name = NSWorkspace.didWakeNotification
     ) {
         self.claudeProjectsDirProvider = { projectsDir ?? AppPaths.claudeProjectsDir }
         self.now = now
@@ -136,12 +141,22 @@ final class UsageStore: ObservableObject {
         self.codexRateReader = codexRateReader
         self.codexEntriesReader = codexEntriesReader
         self.pricingLoader = pricingLoader
+        self.wakeNotificationCenter = wakeNotificationCenter
         self.defaultsObserver = NotificationCenter.default.addObserver(
             forName: UserDefaults.didChangeNotification,
             object: UserDefaults.standard,
             queue: .main
         ) { [weak self] _ in
             self?.reloadIfPathsChanged()
+        }
+        self.wakeObserver = wakeNotificationCenter.addObserver(
+            forName: wakeNotificationName,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            // Repeating timers do not provide a useful freshness guarantee
+            // across system sleep. Refresh as soon as macOS reports a wake.
+            self?.loadAsync()
         }
         self.usageSummary = buildUsageSummary(ccEntries: [], cxEntries: [], now: now())
 
@@ -169,6 +184,9 @@ final class UsageStore: ObservableObject {
         if let defaultsObserver {
             NotificationCenter.default.removeObserver(defaultsObserver)
         }
+        if let wakeObserver {
+            wakeNotificationCenter.removeObserver(wakeObserver)
+        }
     }
 
     // MARK: - Installed detection
@@ -184,13 +202,15 @@ final class UsageStore: ObservableObject {
     // MARK: - Menu bar
 
     var claudePct: Double { claudeRate?.headlinePct ?? 0 }
-    var codexPct: Double { codexRate?.headlinePct ?? 0 }
+    var codexMenuText: String {
+        codexRate?.headlinePct.map { "Codex \(Int($0))%" } ?? "Codex —"
+    }
     var showCodex: Bool { Self.codexInstalled && (codexRate != nil || !cxEntries.isEmpty) }
 
     /// Single-provider fallback text (used when only one is installed)
     var menuBarText: String {
         if Self.claudeInstalled { return "Claude \(Int(claudePct))%" }
-        if Self.codexInstalled  { return "Codex \(Int(codexPct))%" }
+        if Self.codexInstalled  { return codexMenuText }
         return "—"
     }
 

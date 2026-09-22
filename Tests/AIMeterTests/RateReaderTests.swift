@@ -159,6 +159,14 @@ final class RateReaderTests: XCTestCase {
         XCTAssertEqual(rate?.sevenDayResetsAt, normalizeTimestamp(1_784_400_000))
         XCTAssertEqual(rate?.headlinePct, 44)
         XCTAssertEqual(rate?.isWeeklyOnly, true)
+        XCTAssertEqual(
+            CodexRateReader.read(sessionsDir: sessionsDir, now: now.addingTimeInterval(7 * 3600))?.headlinePct,
+            44
+        )
+        XCTAssertNil(CodexRateReader.read(
+            sessionsDir: sessionsDir,
+            now: normalizeTimestamp(1_784_400_000)
+        ))
     }
 
     func testCodexLatestRolloutCacheIsScopedToSessionsDir() throws {
@@ -196,15 +204,36 @@ final class RateReaderTests: XCTestCase {
         let sessions = tempDir.appendingPathComponent("sessions")
         let old = sessions.appendingPathComponent("rollout-old.jsonl")
         let new = sessions.appendingPathComponent("rollout-new.jsonl")
-        try write(codexRateLine(fiveHour: 32, sevenDay: 50, resetsAt: now.timeIntervalSince1970 + 300),
+        try write(codexRateLine(
+            fiveHour: 32,
+            sevenDay: 50,
+            resetsAt: now.timeIntervalSince1970 + 300,
+            sevenDayResetsAt: now.timeIntervalSince1970 + 7 * 86400
+        ),
                   to: old, modDate: now)
         XCTAssertEqual(CodexRateReader.read(sessionsDir: sessions, now: now)?.headlinePct, 32)
         try write("{\"type\":\"session_meta\"}\n", to: new, modDate: now.addingTimeInterval(61))
         XCTAssertEqual(CodexRateReader.read(sessionsDir: sessions, now: now.addingTimeInterval(61))?.headlinePct, 32)
-        try write(codexRateLine(fiveHour: 40, sevenDay: 51, resetsAt: now.timeIntervalSince1970 + 300),
+        try write(codexRateLine(
+            fiveHour: 40,
+            sevenDay: 51,
+            resetsAt: now.timeIntervalSince1970 + 300,
+            sevenDayResetsAt: now.timeIntervalSince1970 + 7 * 86400
+        ),
                   to: new, modDate: now.addingTimeInterval(62))
         XCTAssertEqual(CodexRateReader.read(sessionsDir: sessions, now: now.addingTimeInterval(62))?.headlinePct, 40)
-        XCTAssertNil(CodexRateReader.read(sessionsDir: sessions, now: now.addingTimeInterval(7 * 3600)))
+        let afterOvernightWake = CodexRateReader.read(
+            sessionsDir: sessions,
+            now: now.addingTimeInterval(7 * 3600)
+        )
+        XCTAssertNil(afterOvernightWake?.fiveHourPct)
+        XCTAssertEqual(afterOvernightWake?.sevenDayPct, 51)
+        XCTAssertEqual(afterOvernightWake?.headlinePct, 51)
+        XCTAssertTrue(afterOvernightWake?.isWeeklyOnly == true)
+        XCTAssertNil(CodexRateReader.read(
+            sessionsDir: sessions,
+            now: now.addingTimeInterval(7 * 86400 + 1)
+        ))
     }
 
     func testCodexFindsRateBeyondLargeUTF8ToolOutputAndIgnoresAuxiliaryLimits() throws {
@@ -221,7 +250,10 @@ final class RateReaderTests: XCTestCase {
         let now = Date()
         let sessions = tempDir.appendingPathComponent("sessions")
         var json = try JSONSerialization.jsonObject(with: Data(codexRateLine(
-            fiveHour: 99, sevenDay: 99, resetsAt: now.timeIntervalSince1970).utf8)) as! [String: Any]
+            fiveHour: 99,
+            sevenDay: 99,
+            resetsAt: now.timeIntervalSince1970 - 1
+        ).utf8)) as! [String: Any]
         json["timestamp"] = ISO8601DateFormatter().string(from: now.addingTimeInterval(-7 * 3600))
         try writeJSON(json, to: sessions.appendingPathComponent("rollout-stale.jsonl"), modDate: now)
         XCTAssertNil(CodexRateReader.read(sessionsDir: sessions, now: now))
@@ -257,7 +289,12 @@ final class RateReaderTests: XCTestCase {
         try FileManager.default.setAttributes([.modificationDate: modDate], ofItemAtPath: url.path)
     }
 
-    private func codexRateLine(fiveHour: Double, sevenDay: Double, resetsAt: Double) throws -> String {
+    private func codexRateLine(
+        fiveHour: Double,
+        sevenDay: Double,
+        resetsAt: Double,
+        sevenDayResetsAt: Double = 1_776_700_200
+    ) throws -> String {
         let object: [String: Any] = [
             "type": "event_msg",
             "payload": [
@@ -274,7 +311,7 @@ final class RateReaderTests: XCTestCase {
                 "secondary": [
                     "used_percent": sevenDay,
                     "window_minutes": 10080,
-                    "resets_at": 1_776_700_200,
+                    "resets_at": sevenDayResetsAt,
                 ],
             ],
         ]

@@ -360,8 +360,56 @@ final class UsageStoreTests: XCTestCase {
 
         store.refreshSynchronouslyForTesting()
 
-        XCTAssertEqual(store.codexPct, 44)
         XCTAssertEqual(store.codexRate?.isWeeklyOnly, true)
+        XCTAssertEqual(store.codexMenuText, "Codex 44%")
+    }
+
+    @MainActor
+    func testCodexMenuDoesNotPresentMissingRateAsZero() {
+        let store = makeStore(
+            projectsDir: tempDir,
+            now: Date(),
+            codexRate: nil,
+            codexEntries: []
+        )
+
+        store.refreshSynchronouslyForTesting()
+
+        XCTAssertEqual(store.codexMenuText, "Codex —")
+    }
+
+    @MainActor
+    func testWakeNotificationRefreshesRateLimitsImmediately() async {
+        let now = Date()
+        let wakeCenter = NotificationCenter()
+        let wakeName = Notification.Name("UsageStoreTests.didWake")
+        let expectedRate = RateLimit(
+            fiveHourPct: 21,
+            sevenDayPct: 43,
+            fiveHourResetsAt: now.addingTimeInterval(3600),
+            sevenDayResetsAt: now.addingTimeInterval(7 * 86400),
+            updatedAt: now
+        )
+        let store = UsageStore(
+            projectsDir: tempDir,
+            autoload: false,
+            autoRefresh: false,
+            now: { now },
+            claudeRateReader: { nil },
+            claudeRateStatusReader: { .waitingForSessionData },
+            codexRateReader: { expectedRate },
+            codexEntriesReader: { _ in [] },
+            pricingLoader: {},
+            wakeNotificationCenter: wakeCenter,
+            wakeNotificationName: wakeName
+        )
+
+        wakeCenter.post(name: wakeName, object: nil)
+        for _ in 0..<100 where store.codexRate == nil {
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+
+        XCTAssertEqual(store.codexRate, expectedRate)
     }
 
     @MainActor

@@ -6,7 +6,7 @@ struct RateLimit: Equatable {
     let sevenDayPct: Double?
     let fiveHourResetsAt: Date?
     let sevenDayResetsAt: Date?
-    let updatedAt: Date  // file modification time
+    let updatedAt: Date  // provider event time, falling back to file modification time
 
     /// The short window normally leads. When the provider temporarily omits
     /// it, the weekly window becomes the only meaningful headline value.
@@ -174,7 +174,10 @@ enum CodexRateReader {
     private static let fullScanInterval: TimeInterval = 60
     private static let maxCandidates = 16
     private static let maxScanBytes: UInt64 = 64 * 1024 * 1024
-    private static let maxAge: TimeInterval = 6 * 3600
+    // `resets_at` is authoritative when present. These ages are only fallbacks
+    // for older payloads that omit a reset timestamp.
+    private static let fiveHourFallbackMaxAge: TimeInterval = 6 * 3600
+    private static let sevenDayFallbackMaxAge: TimeInterval = 7 * 86400
     private static let isoFull: ISO8601DateFormatter = {
         let f = ISO8601DateFormatter()
         f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -225,11 +228,45 @@ enum CodexRateReader {
                 rate = readLatestRate(from: url, size: size.uint64Value, fallbackDate: mod)
                 fileCache[url.path] = CachedFile(mod: mod, size: size.uint64Value, fileID: fileID, rate: rate)
             }
-            guard let rate, now.timeIntervalSince(rate.updatedAt) >= 0,
-                  now.timeIntervalSince(rate.updatedAt) < maxAge else { continue }
+            guard let cachedRate = rate,
+                  let rate = activeWindows(from: cachedRate, at: now) else { continue }
             if best == nil || rate.updatedAt > best!.updatedAt { best = rate }
         }
         return best
+    }
+
+    /// Keep each server window until its own reset. Previously the complete
+    /// snapshot was discarded six hours after the event, which also erased a
+    /// still-valid seven-day window after a Mac slept overnight.
+    private static func activeWindows(from rate: RateLimit, at now: Date) -> RateLimit? {
+        let age = now.timeIntervalSince(rate.updatedAt)
+        guard age >= 0 else { return nil }
+
+        func isActive(_ percentage: Double?, resetsAt: Date?, fallbackMaxAge: TimeInterval) -> Bool {
+            guard percentage != nil else { return false }
+            if let resetsAt { return now < resetsAt }
+            return age < fallbackMaxAge
+        }
+
+        let keepFiveHour = isActive(
+            rate.fiveHourPct,
+            resetsAt: rate.fiveHourResetsAt,
+            fallbackMaxAge: fiveHourFallbackMaxAge
+        )
+        let keepSevenDay = isActive(
+            rate.sevenDayPct,
+            resetsAt: rate.sevenDayResetsAt,
+            fallbackMaxAge: sevenDayFallbackMaxAge
+        )
+        guard keepFiveHour || keepSevenDay else { return nil }
+
+        return RateLimit(
+            fiveHourPct: keepFiveHour ? rate.fiveHourPct : nil,
+            sevenDayPct: keepSevenDay ? rate.sevenDayPct : nil,
+            fiveHourResetsAt: keepFiveHour ? rate.fiveHourResetsAt : nil,
+            sevenDayResetsAt: keepSevenDay ? rate.sevenDayResetsAt : nil,
+            updatedAt: rate.updatedAt
+        )
     }
 
     private static func readLatestRate(from url: URL, size: UInt64, fallbackDate: Date) -> RateLimit? {
