@@ -3,6 +3,15 @@
     <channel>
         <title>aimeter</title>
         <item>
+            <title>0.3.9</title>
+            <pubDate>Tue, 22 Sep 2026 06:54:29 +0000</pubDate>
+            <link>https://github.com/wangyufeng0615/aimeter</link>
+            <sparkle:version>12</sparkle:version>
+            <sparkle:shortVersionString>0.3.9</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/wangyufeng0615/aimeter/releases/download/v0.3.9/aimeter.zip" length="3793372" type="application/octet-stream" sparkle:edSignature="cIsOwnEukeAHbrcDXx1K/iOrv8en4btHeBqbJiKJiTsrNTZr9++KHwoHKMpZi/po4JXJh4pP4cq2ggIcaQ6mBA=="/>
+        </item>
+        <item>
             <title>0.3.8</title>
             <pubDate>Sat, 05 Sep 2026 18:44:34 +0000</pubDate>
             <link>https://github.com/wangyufeng0615/aimeter</link>
@@ -19,15 +28,6 @@
             <sparkle:shortVersionString>0.3.7</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
             <enclosure url="https://github.com/wangyufeng0615/aimeter/releases/download/v0.3.7/aimeter.zip" length="3757237" type="application/octet-stream" sparkle:edSignature="WuC1GUrQSBgKcwGNzHl1HbMI5LAYbYk0+H1kXxSiAFm1SbW5WLvSlfyrLytKcRUehmOtoKRkqAAZzofnx72eDw=="/>
-        </item>
-        <item>
-            <title>0.3.6</title>
-            <pubDate>Tue, 21 Jul 2026 05:02:54 +0000</pubDate>
-            <link>https://github.com/wangyufeng0615/aimeter</link>
-            <sparkle:version>9</sparkle:version>
-            <sparkle:shortVersionString>0.3.6</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
-            <enclosure url="https://github.com/wangyufeng0615/aimeter/releases/download/v0.3.6/aimeter.zip" length="3746377" type="application/octet-stream" sparkle:edSignature="TTjpui4tGR01EgN5FmfoS4FWQ/HNnr7kNjRlBpkaGp66QDNaXfhLssyhvpBcECrcQy0R5PqUwAIDqEHZz2qcDg=="/>
         </item>
     </channel>
 </rss>
