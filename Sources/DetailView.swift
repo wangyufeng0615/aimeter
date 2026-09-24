@@ -27,6 +27,9 @@ enum Font2 {
 
 struct DetailView: View {
     @ObservedObject var store: UsageStore
+#if canImport(Sparkle)
+    @EnvironmentObject private var updater: AppUpdater
+#endif
     @Environment(\.openSettings) private var openSettings
     @Environment(\.dismiss) private var dismiss
 
@@ -58,6 +61,17 @@ struct DetailView: View {
                 FooterButton(icon: "gearshape", label: S.settings) {
                     openSettingsFromMenuBar()
                 }
+#if canImport(Sparkle)
+                if updater.pendingUpdateVersion != nil {
+                    FooterButton(icon: "arrow.down.circle", label: S.showUpdate) {
+                        dismiss()
+                        Task { @MainActor in
+                            await Task.yield()
+                            updater.showPendingUpdate()
+                        }
+                    }
+                }
+#endif
                 Spacer()
                 FooterButton(icon: "power", label: S.quit) {
                     NSApplication.shared.terminate(nil)
@@ -88,7 +102,7 @@ struct DetailView: View {
     // MARK: - Rate limits
 
     private var rateSection: some View {
-        VStack(spacing: 4) {
+        VStack(alignment: .leading, spacing: 4) {
             if UsageStore.claudeInstalled {
                 rateCard(
                     name: "Claude Code",
@@ -100,6 +114,7 @@ struct DetailView: View {
                 rateCard(name: "Codex", rate: store.codexRate, emptyMessage: S.codexRateWaiting)
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var claudeEmptyRateMessage: String {

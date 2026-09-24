@@ -3,14 +3,21 @@ import XCTest
 
 final class PricingTests: XCTestCase {
     func testSeptemberModelsResolveAndHaveOfflineRates() {
-        for model in ["claude-fable-5-1", "claude-mythos-5-1", "gpt-6-astra"] {
+        for model in ["claude-fable-5-1", "claude-mythos-5-1", "claude-opus-5-5",
+                      "gpt-6-astra", "gpt-6-sol", "gpt-6-luna"] {
             XCTAssertEqual(Pricing.modelFamily(model), model)
             XCTAssertTrue(Pricing.hasRate(model: model))
         }
         XCTAssertEqual(Pricing.modelFamily("fable-5-1"), "claude-fable-5-1")
         XCTAssertEqual(Pricing.modelFamily("openai/gpt-6-astra-20260903"), "gpt-6-astra")
+        XCTAssertEqual(Pricing.modelFamily("openai/gpt-6-sol-20260922"), "gpt-6-sol")
+        XCTAssertEqual(Pricing.modelFamily("gpt-6-luna-20260922"), "gpt-6-luna")
+        XCTAssertEqual(Pricing.modelFamily("opus-5-5"), "claude-opus-5-5")
         XCTAssertEqual(Pricing.modelFamily("gpt-6-astra-pro"), "unknown")
+        XCTAssertEqual(Pricing.modelFamily("gpt-6-sol-pro"), "unknown")
+        XCTAssertEqual(Pricing.modelFamily("gpt-6-luna-pro"), "unknown")
         XCTAssertEqual(Pricing.modelFamily("relay/gpt-6-astra"), "unknown")
+        XCTAssertEqual(Pricing.modelFamily("relay/gpt-6-sol"), "unknown")
         XCTAssertEqual(Pricing.cost(model: "claude-fable-5-1", input: 0, output: 0,
                                     cacheWrite: 0, cacheRead: 1_000_000), 0.25, accuracy: 1e-12)
         XCTAssertEqual(Pricing.cost(model: "claude-fable-5", input: 0, output: 0,
@@ -47,6 +54,164 @@ final class PricingTests: XCTestCase {
                                     input: 72_001, output: 100, cacheWrite: 100_000, cacheRead: 100_000),
                        0.5 * long, accuracy: 1e-12)
         XCTAssertFalse(Pricing.hasRate(model: "gpt-6-astra", serviceTier: "unverified"))
+    }
+
+    func testGPT6SolAndLunaOfficialTokenPricesAndTiers() {
+        for (model, standard, longContext) in [
+            ("gpt-6-sol", 0.435, 1.108004),
+            ("gpt-6-luna", 0.02175, 0.0554002)
+        ] {
+            let short = Pricing.cost(model: model, input: 100_000, output: 10_000,
+                                     cacheWrite: 50_000, cacheRead: 50_000)
+            XCTAssertEqual(short, standard, accuracy: 1e-12)
+            XCTAssertEqual(Pricing.cost(model: model, serviceTier: "fast", input: 100_000,
+                                        output: 10_000, cacheWrite: 50_000, cacheRead: 50_000),
+                           2 * standard, accuracy: 1e-12)
+            XCTAssertEqual(Pricing.cost(model: model, serviceTier: "flex", input: 100_000,
+                                        output: 10_000, cacheWrite: 50_000, cacheRead: 50_000),
+                           0.5 * standard, accuracy: 1e-12)
+            XCTAssertEqual(Pricing.cost(model: model, input: 172_001, output: 10_000,
+                                        cacheWrite: 50_000, cacheRead: 50_000),
+                           longContext, accuracy: 1e-12)
+            XCTAssertFalse(Pricing.hasRate(model: model, serviceTier: "unverified"))
+        }
+    }
+
+    func testNewGPT6ModelsAcceptOnlyVerifiedLiteLLMKeys() {
+        let sol: [String: Any] = ["input_cost_per_token": 2e-6,
+                                  "output_cost_per_token": 10e-6,
+                                  "cache_read_input_token_cost": 0.2e-6,
+                                  "cache_creation_input_token_cost": 2.5e-6]
+        let luna: [String: Any] = ["input_cost_per_token": 0.1e-6,
+                                   "output_cost_per_token": 0.5e-6,
+                                   "cache_read_input_token_cost": 0.01e-6,
+                                   "cache_creation_input_token_cost": 0.125e-6]
+        let incompletePro: [String: Any] = ["input_cost_per_token": 2e-6,
+                                             "output_cost_per_token": 10e-6]
+        let parsed = Pricing.parseLiteLLM([
+            "gpt-6-sol": sol, "gpt-6-luna": luna,
+            "gpt-6-sol-pro": incompletePro, "openrouter/openai/gpt-6-sol": sol
+        ])
+        XCTAssertEqual(Set(parsed.keys), Set(["gpt-6-sol", "gpt-6-luna"]))
+        XCTAssertEqual(parsed["gpt-6-sol"]?.longContextThreshold, 272_000)
+        XCTAssertEqual(parsed["gpt-6-luna"]?.input, 0.1e-6)
+    }
+
+    func testNewDirectGPTModelNeedsCompleteIndependentPricing() {
+        let complete: [String: Any] = [
+            "input_cost_per_token": 2e-6, "output_cost_per_token": 10e-6,
+            "cache_read_input_token_cost": 0.2e-6,
+            "cache_creation_input_token_cost": 2.5e-6,
+            "input_cost_per_token_above_272k_tokens": 4e-6,
+            "output_cost_per_token_above_272k_tokens": 15e-6,
+            "cache_read_input_token_cost_above_272k_tokens": 0.4e-6,
+            "cache_creation_input_token_cost_above_272k_tokens": 5e-6
+        ]
+        var missingCache = complete
+        missingCache.removeValue(forKey: "cache_read_input_token_cost")
+        var missingLongPrice = complete
+        missingLongPrice.removeValue(forKey: "output_cost_per_token_above_272k_tokens")
+        var mixedLongSchedule = complete
+        mixedLongSchedule["input_cost_per_token_above_200k_tokens"] = 3e-6
+        var wrongProvider = complete
+        wrongProvider["litellm_provider"] = "openrouter"
+        let parsed = Pricing.parseLiteLLM([
+            "gpt-7-nova": complete,
+            "gpt-7-nova-pro": missingCache,
+            "gpt-7-nova-mini": missingLongPrice,
+            "gpt-7-nova-mixed": mixedLongSchedule,
+            "gpt-7-nova-other-provider": wrongProvider,
+            "openrouter/openai/gpt-7-nova": complete
+        ])
+        XCTAssertEqual(Set(parsed.keys), Set(["gpt-7-nova"]))
+        XCTAssertEqual(parsed["gpt-7-nova"]?.longContextThreshold, 272_000)
+
+        let families = Set(parsed.keys)
+        XCTAssertEqual(Pricing.modelFamily("gpt-7-nova", availableFamilies: families), "gpt-7-nova")
+        XCTAssertEqual(Pricing.modelFamily("openai/gpt-7-nova", availableFamilies: families), "gpt-7-nova")
+        XCTAssertEqual(Pricing.modelFamily("gpt-7-nova-20260923", availableFamilies: families), "gpt-7-nova")
+        XCTAssertEqual(Pricing.modelFamily("gpt-7-nova-pro", availableFamilies: families), "unknown")
+        XCTAssertEqual(Pricing.modelFamily("relay/gpt-7-nova", availableFamilies: families), "unknown")
+
+        var independentProPrice = complete
+        independentProPrice["input_cost_per_token"] = 30e-6
+        let separatelyPriced = Pricing.parseLiteLLM(["gpt-7-nova": complete,
+                                                      "gpt-7-nova-pro": independentProPrice])
+        XCTAssertEqual(separatelyPriced["gpt-7-nova-pro"]?.input, 30e-6)
+        XCTAssertEqual(Pricing.modelFamily("gpt-7-nova-pro",
+                                           availableFamilies: Set(separatelyPriced.keys)),
+                       "gpt-7-nova-pro")
+    }
+
+    func testFutureFlatGPTAndDatedPriceKeyNeedNoModelList() {
+        let flat: [String: Any] = [
+            "input_cost_per_token": 1e-6, "output_cost_per_token": 5e-6,
+            "cache_read_input_token_cost": 0.1e-6,
+            "cache_creation_input_token_cost": 1.25e-6
+        ]
+        let parsed = Pricing.parseLiteLLM(["gpt-7-mini-20270115": flat])
+        XCTAssertEqual(Set(parsed.keys), Set(["gpt-7-mini"]))
+        XCTAssertNil(parsed["gpt-7-mini"]?.longContextThreshold)
+        XCTAssertEqual(Pricing.modelFamily("gpt-7-mini", availableFamilies: Set(parsed.keys)),
+                       "gpt-7-mini")
+        XCTAssertEqual(Pricing.modelFamily("gpt-7-mini-20270115", availableFamilies: Set(parsed.keys)),
+                       "gpt-7-mini")
+    }
+
+    func testFutureGPTServiceTiersRequireCompleteUniformPrices() {
+        let fields = ["input_cost_per_token", "output_cost_per_token",
+                      "cache_read_input_token_cost", "cache_creation_input_token_cost"]
+        let normal = [2e-6, 10e-6, 0.2e-6, 2.5e-6]
+        let long = [4e-6, 15e-6, 0.4e-6, 5e-6]
+        var complete: [String: Any] = [:]
+        for (index, field) in fields.enumerated() {
+            complete[field] = normal[index]
+            complete["\(field)_above_272k_tokens"] = long[index]
+            complete["\(field)_priority"] = normal[index] * 2
+            complete["\(field)_above_272k_tokens_priority"] = long[index] * 2
+            complete["\(field)_flex"] = normal[index] * 0.5
+            complete["\(field)_above_272k_tokens_flex"] = long[index] * 0.5
+        }
+        let fullyPriced = Pricing.parseLiteLLM(["gpt-7-nova": complete])
+        XCTAssertEqual(fullyPriced["gpt-7-nova"]?.fastMultiplier, 2)
+        XCTAssertEqual(fullyPriced["gpt-7-nova"]?.flexMultiplier, 0.5)
+
+        var partial = complete
+        partial.removeValue(forKey: "cache_creation_input_token_cost_above_272k_tokens_priority")
+        let partialPrice = Pricing.parseLiteLLM(["gpt-7-nova": partial])
+        XCTAssertNotNil(partialPrice["gpt-7-nova"])
+        XCTAssertNil(partialPrice["gpt-7-nova"]?.fastMultiplier)
+        XCTAssertEqual(partialPrice["gpt-7-nova"]?.flexMultiplier, 0.5)
+
+        var nonUniform = complete
+        nonUniform["output_cost_per_token_priority"] = 25e-6
+        XCTAssertNil(Pricing.parseLiteLLM(["gpt-7-nova": nonUniform])["gpt-7-nova"]?.fastMultiplier)
+    }
+
+    func testDynamicGPTCacheRequiresTheSameLongContextContract() {
+        let complete: [String: Double] = [
+            "input": 2e-6, "output": 10e-6, "cacheRead": 0.2e-6, "cacheWrite": 2.5e-6,
+            "inputTiered": 4e-6, "outputTiered": 15e-6,
+            "cacheReadTiered": 0.4e-6, "cacheWriteTiered": 5e-6,
+            "longContextThreshold": 272_000
+        ]
+        var incomplete = complete
+        incomplete.removeValue(forKey: "cacheWriteTiered")
+        let flat: [String: Double] = [
+            "input": 1e-6, "output": 5e-6,
+            "cacheRead": 0.1e-6, "cacheWrite": 1.25e-6,
+            "fastMultiplier": 2
+        ]
+        var invalidTier = flat
+        invalidTier["fastMultiplier"] = -1
+        let parsed = Pricing.parseCacheRates([
+            "gpt-7-nova": complete, "gpt-7-nova-mini": incomplete,
+            "gpt-7-flat": flat, "gpt-7-invalid": invalidTier,
+            "relay/gpt-7-nova": complete
+        ])
+        XCTAssertEqual(Set(parsed.keys), Set(["gpt-7-nova", "gpt-7-flat"]))
+        XCTAssertEqual(parsed["gpt-7-flat"]?.fastMultiplier, 2)
+        XCTAssertEqual(Pricing.parseCacheRates(["gpt-6-sol": complete])["gpt-6-sol"]?.fastMultiplier, 2)
     }
 
     func testGPT56DefaultsAndSolHistoricalPromotionBoundary() {
@@ -89,10 +254,13 @@ final class PricingTests: XCTestCase {
         XCTAssertEqual(Pricing.modelFamily("gpt-5.4-nano"), "gpt-5.4-nano")
         XCTAssertEqual(Pricing.modelFamily("gpt-5.5"), "gpt-5.5")
         XCTAssertEqual(Pricing.modelFamily("gpt-5.5-pro"), "gpt-5.5-pro")
+        XCTAssertFalse(Pricing.hasRate(model: "gpt-5.4-pro", serviceTier: "fast"))
         XCTAssertEqual(Pricing.modelFamily("gpt-5.6"), "gpt-5.6-sol")
         XCTAssertEqual(Pricing.modelFamily("gpt-5.6-sol"), "gpt-5.6-sol")
         XCTAssertEqual(Pricing.modelFamily("gpt-5.6-terra"), "gpt-5.6-terra")
         XCTAssertEqual(Pricing.modelFamily("gpt-5.6-luna"), "gpt-5.6-luna")
+        XCTAssertEqual(Pricing.modelFamily("gpt-6-sol"), "gpt-6-sol")
+        XCTAssertEqual(Pricing.modelFamily("gpt-6-luna"), "gpt-6-luna")
         XCTAssertEqual(Pricing.modelFamily("gpt-5.6-sol-pro"), "unknown")
         XCTAssertEqual(Pricing.modelFamily("gpt-5.7"), "unknown")
     }
@@ -102,6 +270,8 @@ final class PricingTests: XCTestCase {
         XCTAssertEqual(Pricing.modelFamily("fable-5"), "claude-fable-5")
         XCTAssertEqual(Pricing.modelFamily("claude-mythos-5"), "claude-mythos-5")
         XCTAssertEqual(Pricing.modelFamily("claude-opus-5"), "claude-opus-5")
+        XCTAssertEqual(Pricing.modelFamily("claude-opus-5-5"), "claude-opus-5-5")
+        XCTAssertEqual(Pricing.modelFamily("claude-opus-5-5-20260922"), "claude-opus-5-5")
         XCTAssertEqual(Pricing.modelFamily("opus-5"), "claude-opus-5")
         XCTAssertEqual(Pricing.modelFamily("claude-opus-5-20260723"), "claude-opus-5")
         XCTAssertEqual(Pricing.modelFamily("claude-opus-4-8"), "claude-opus-4-8")
@@ -184,6 +354,17 @@ final class PricingTests: XCTestCase {
         XCTAssertEqual(fast48, 93.5, accuracy: 1e-12)
         XCTAssertEqual(fast47, 0, accuracy: 1e-12)
         XCTAssertFalse(Pricing.hasRate(model: "claude-opus-4-7", speed: "fast"))
+    }
+
+    func testOpus55OfficialCachePricesAndFastMode() {
+        let standard = Pricing.cost(model: "claude-opus-5-5", input: 100_000, output: 100_000,
+                                    cacheWrite: 100_000, cacheWrite1h: 100_000, cacheRead: 100_000)
+        let fast = Pricing.cost(model: "claude-opus-5-5", speed: "fast", input: 100_000,
+                                output: 100_000, cacheWrite: 100_000, cacheWrite1h: 100_000,
+                                cacheRead: 100_000)
+        XCTAssertEqual(standard, 3.72, accuracy: 1e-12)
+        XCTAssertEqual(fast, 7.44, accuracy: 1e-12)
+        XCTAssertTrue(Pricing.hasRate(model: "claude-opus-5-5", speed: "fast"))
     }
 
     func testRetiredOpus46FastModeUsesStandardPricing() {
@@ -350,6 +531,8 @@ final class PricingTests: XCTestCase {
                 "cache_creation_input_token_cost": 6.25e-6,
                 "input_cost_per_token_above_272k_tokens": 10e-6,
                 "output_cost_per_token_above_272k_tokens": 45e-6,
+                "cache_read_input_token_cost_above_272k_tokens": 1e-6,
+                "cache_creation_input_token_cost_above_272k_tokens": 12.5e-6,
             ],
             "anthropic.claude-fable-5": [
                 "input_cost_per_token": 10e-6,
@@ -457,6 +640,51 @@ final class PricingTests: XCTestCase {
             ),
             "claude-sonnet-6"
         )
+    }
+
+    func testFutureClaudeFastRateUsesIndependentDirectPrice() {
+        let base: [String: Any] = [
+            "input_cost_per_token": 4e-6, "output_cost_per_token": 20e-6,
+            "cache_read_input_token_cost": 0.4e-6,
+            "cache_creation_input_token_cost": 5e-6,
+            "cache_creation_input_token_cost_above_1hr": 8e-6
+        ]
+        let fast: [String: Any] = [
+            "input_cost_per_token": 8e-6, "output_cost_per_token": 40e-6,
+            "cache_read_input_token_cost": 0.8e-6,
+            "cache_creation_input_token_cost": 10e-6,
+            "cache_creation_input_token_cost_above_1hr": 16e-6
+        ]
+        let parsed = Pricing.parseLiteLLM([
+            "claude-opus-6-20270115": base,
+            "claude-opus-6-fast-20270115": fast,
+            "relay/claude-opus-6-fast": fast
+        ])
+        XCTAssertEqual(parsed["claude-opus-6"]?.input, 4e-6)
+        XCTAssertEqual(parsed["claude-opus-6-fast"]?.input, 8e-6)
+        XCTAssertEqual(Set(parsed.keys), Set(["claude-opus-6", "claude-opus-6-fast"]))
+
+        var incompleteFast = fast
+        incompleteFast.removeValue(forKey: "cache_creation_input_token_cost_above_1hr")
+        XCTAssertNil(Pricing.parseLiteLLM(["claude-opus-6-fast": incompleteFast])["claude-opus-6-fast"])
+    }
+
+    func testFutureClaudeProductFamilyNeedsNoNameList() {
+        let price: [String: Any] = [
+            "input_cost_per_token": 3e-6, "output_cost_per_token": 15e-6,
+            "cache_read_input_token_cost": 0.3e-6,
+            "cache_creation_input_token_cost": 3.75e-6,
+            "cache_creation_input_token_cost_above_1hr": 6e-6,
+            "litellm_provider": "anthropic"
+        ]
+        let parsed = Pricing.parseLiteLLM(["claude-aurora-6-20270115": price])
+        XCTAssertEqual(parsed["claude-aurora-6"]?.input, 3e-6)
+        XCTAssertEqual(Pricing.modelFamily("aurora-6", availableFamilies: Set(parsed.keys)),
+                       "claude-aurora-6")
+        XCTAssertTrue(Pricing.supportsUSInference(family: "claude-aurora-6"))
+        var wrongProvider = price
+        wrongProvider["litellm_provider"] = "openrouter"
+        XCTAssertNil(Pricing.parseLiteLLM(["claude-aurora-6": wrongProvider])["claude-aurora-6"])
     }
 
     func testParseLiteLLMRejectsFutureClaudeRateWithIncompleteCacheContract() {

@@ -151,6 +151,30 @@ final class UsageStoreTests: XCTestCase {
     }
 
     @MainActor
+    func testClaudeOpus55FastUsageHasCompleteCost() throws {
+        let projectsDir = try makeProjectsDir()
+        let logFile = projectsDir.appendingPathComponent("session.jsonl")
+        let now = Date(timeIntervalSince1970: 1_790_164_800)
+
+        try write(
+            try usageLine(
+                messageID: "m1", requestID: "r1", timestamp: now,
+                model: "claude-opus-5-5", input: 100_000, output: 100_000,
+                cacheCreation: 200_000, cacheCreation1h: 100_000,
+                cacheRead: 100_000, speed: "fast"
+            ) + "\n",
+            to: logFile
+        )
+
+        let store = makeStore(projectsDir: projectsDir, now: now)
+        store.refreshSynchronouslyForTesting()
+
+        XCTAssertEqual(store.ccEntries[0].cost, 7.44, accuracy: 1e-12)
+        XCTAssertTrue(store.ccEntries[0].hasKnownCost)
+        XCTAssertFalse(store.usageSummary.today.hasUnknownCost)
+    }
+
+    @MainActor
     func testClaudeParserMarksRetiredOpus47FastModeUnpriced() throws {
         let projectsDir = try makeProjectsDir()
         let logFile = projectsDir.appendingPathComponent("session.jsonl")
@@ -230,6 +254,35 @@ final class UsageStoreTests: XCTestCase {
         XCTAssertTrue(store.usageSummary.today.hasUnknownCost)
         XCTAssertTrue(store.usageSummary.today.models[0].hasUnknownCost)
         XCTAssertEqual(store.usageSummary.today.cost, 0)
+    }
+
+    @MainActor
+    func testGPT6SolCostReachesTodaySummaryWithoutPartialMarker() throws {
+        let projectsDir = try makeProjectsDir()
+        let now = Date()
+        var entry = CodexReader.UsageEntry(
+            id: "gpt6-sol:1",
+            sessionID: "gpt6-sol",
+            timestamp: now,
+            model: "gpt-6-sol",
+            inputTokens: 200_000,
+            cachedInputTokens: 100_000,
+            outputTokens: 10_000,
+            reasoningOutputTokens: 0,
+            totalTokens: 210_000
+        )
+        entry.cacheWriteInputTokens = 50_000
+        entry.serviceTier = "fast"
+
+        let store = makeStore(projectsDir: projectsDir, now: now, codexEntries: [entry])
+        store.refreshSynchronouslyForTesting()
+
+        XCTAssertEqual(store.usageSummary.today.cost, 0.69, accuracy: 1e-12)
+        XCTAssertFalse(store.usageSummary.today.hasUnknownCost)
+        let model = try XCTUnwrap(store.usageSummary.today.models.first)
+        XCTAssertEqual(model.fullName, "gpt-6-sol")
+        XCTAssertEqual(model.cost, 0.69, accuracy: 1e-12)
+        XCTAssertFalse(model.hasUnknownCost)
     }
 
     @MainActor

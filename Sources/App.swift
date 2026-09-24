@@ -17,17 +17,28 @@ struct AIMeterApp: App {
     var body: some Scene {
         MenuBarExtra {
             DetailView(store: store)
+#if canImport(Sparkle)
+                .environmentObject(updater)
+#endif
         } label: {
-            if store.showCodex && UsageStore.claudeInstalled,
-               let image = imageCache.image(
-                   top: "Claude \(Int(store.claudePct))%",
-                   bottom: store.codexMenuText
-               ) {
-                Image(nsImage: image)
-            } else {
-                Text(store.menuBarText)
-                    .font(.system(size: 11, weight: .medium, design: .rounded))
-                    .monospacedDigit()
+            HStack(spacing: 3) {
+                if store.showCodex && UsageStore.claudeInstalled,
+                   let image = imageCache.image(
+                       top: "Claude \(Int(store.claudePct))%",
+                       bottom: store.codexMenuText
+                   ) {
+                    Image(nsImage: image)
+                } else {
+                    Text(store.menuBarText)
+                        .font(.system(size: 11, weight: .medium, design: .rounded))
+                        .monospacedDigit()
+                }
+#if canImport(Sparkle)
+                if updater.pendingUpdateVersion != nil {
+                    Image(systemName: "arrow.down.circle.fill")
+                        .accessibilityLabel(S.updateAvailable)
+                }
+#endif
             }
         }
         .menuBarExtraStyle(.window)
@@ -89,13 +100,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // Heuristic: Settings windows are titled "Settings" (or localized form)
             // and have standard window level. MenuBarExtra popover has a special level.
             guard window.level == .normal, window.styleMask.contains(.titled) else { return }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                let anyRegularVisible = NSApp.windows.contains { w in
-                    w.isVisible && w.level == .normal && w.styleMask.contains(.titled)
-                }
-                if !anyRegularVisible {
-                    NSApp.setActivationPolicy(.accessory)
-                }
+            Task { @MainActor in
+                Self.restoreAccessoryWhenNoRegularWindow()
+            }
+        }
+    }
+
+    @MainActor
+    static func restoreAccessoryWhenNoRegularWindow() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+            let anyRegularVisible = NSApp.windows.contains { w in
+                w.isVisible && w.level == .normal && w.styleMask.contains(.titled)
+            }
+            if !anyRegularVisible {
+                NSApp.setActivationPolicy(.accessory)
             }
         }
     }

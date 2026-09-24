@@ -52,6 +52,9 @@ enum S {
     // Updates (Sparkle)
     static var checkForUpdates: String    { zh ? "检查更新…" : "Check for Updates…" }
     static var autoCheckUpdates: String   { zh ? "自动检查更新" : "Automatically check for updates" }
+    static var autoInstallUpdates: String { zh ? "自动下载并安装更新" : "Automatically download and install updates" }
+    static var updateAvailable: String   { zh ? "有更新可用" : "Update available" }
+    static var showUpdate: String        { zh ? "查看更新…" : "View Update…" }
     static var updatesSectionTitle: String { zh ? "更新" : "Updates" }
 
     static func resetsIn(_ t: String) -> String {

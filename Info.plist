@@ -13,9 +13,9 @@
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.3.9</string>
+    <string>0.3.10</string>
     <key>CFBundleVersion</key>
-    <string>12</string>
+    <string>13</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>ITSAppUsesNonExemptEncryption</key>
@@ -41,6 +41,8 @@
     <key>SUVerifyUpdateBeforeExtraction</key>
     <true/>
     <key>SUEnableAutomaticChecks</key>
+    <true/>
+    <key>SUAutomaticallyUpdate</key>
     <true/>
     <key>SUScheduledCheckInterval</key>
     <integer>86400</integer>

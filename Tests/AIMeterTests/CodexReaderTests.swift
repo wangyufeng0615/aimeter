@@ -260,6 +260,24 @@ final class CodexReaderTests: XCTestCase {
         XCTAssertTrue(entries.last?.hasKnownCost == true)
     }
 
+    func testGPT6SolSessionShowsKnownCostWithFastTier() throws {
+        let sessions = try makeSessionsDir()
+        let file = sessions.appendingPathComponent("rollout-gpt6-sol.jsonl")
+        let start = Date(timeIntervalSince1970: 1_788_600_000)
+        let usage = ["input_tokens": 200_000, "cached_input_tokens": 100_000,
+                     "cache_write_input_tokens": 50_000, "output_tokens": 10_000,
+                     "total_tokens": 210_000]
+        try write([
+            try jsonLine(["type": "turn_context", "payload": ["model": "gpt-6-sol", "service_tier": "fast"]]),
+            try tokenCountLine(timestamp: start, last: usage, total: usage)
+        ].joined(separator: "\n") + "\n", to: file)
+
+        let entry = try XCTUnwrap(CodexReader.readEntries(since: start, sessionsDir: sessions)?.first)
+        XCTAssertEqual(entry.model, "gpt-6-sol")
+        XCTAssertTrue(entry.hasKnownCost)
+        XCTAssertEqual(entry.cost, 0.69, accuracy: 1e-12)
+    }
+
     func testCounterRestartDoesNotDropFirstNewRequestOrDuplicateRepeat() throws {
         let sessions = try makeSessionsDir()
         let file = sessions.appendingPathComponent("rollout-reset.jsonl")

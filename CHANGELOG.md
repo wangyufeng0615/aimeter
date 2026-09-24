@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.10] - 2026-09-24
+
+### Added
+- Price GPT-6 Sol, GPT-6 Luna, and Claude Opus 5.5, including supported cache, long-context, and processing-tier rates.
+- Import fully priced future direct GPT and Claude models without a per-model allowlist while rejecting incomplete or third-party pricing.
+
+### Changed
+- Download and install eligible updates automatically by default; expose the setting and show a menu-bar reminder when an update still needs attention.
+
+### Fixed
+- Align Claude Code and Codex rate-limit text when their empty-state messages have different lengths.
+
 ## [0.3.9] - 2026-09-22
 
 ### Fixed
