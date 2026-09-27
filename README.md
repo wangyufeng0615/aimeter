@@ -6,7 +6,7 @@
 
 [中文 README](README_CN.md)
 
-A lightweight macOS menu bar app that tracks your [Claude Code](https://code.claude.com/) and [Codex CLI](https://github.com/openai/codex) usage in real time.
+A lightweight macOS menu bar app that tracks shared Claude subscription limits, plus local [Claude Code](https://code.claude.com/) and [Codex CLI](https://github.com/openai/codex) activity.
 
 > A tool I use every day myself — carefully maintained for the long haul.
 
@@ -16,10 +16,9 @@ A lightweight macOS menu bar app that tracks your [Claude Code](https://code.cla
 
 ## Features
 
-- Accurate 5-hour / weekly usage limits
-- Token usage and cost breakdown
-- Only use Claude Code or Codex? The other's panel stays hidden
-- Usage and rate-limit data is read from local CLI files; no usage data is uploaded
+- 5-hour / weekly Claude limit snapshots from local Desktop or Code data; Desktop snapshots expire after 30 minutes
+- Token usage and cost breakdown from local Claude Code and Codex logs (desktop chat is not included)
+- Claude limits are read from the latest local Claude Desktop or Claude Code snapshot; no usage data is uploaded
 
 ## Install
 

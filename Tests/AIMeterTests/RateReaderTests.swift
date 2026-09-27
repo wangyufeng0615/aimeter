@@ -40,7 +40,8 @@ final class RateReaderTests: XCTestCase {
             modDate: now
         )
 
-        let result = ClaudeRateReader.inspect(filePath: usageFile, cachePath: cacheFile, now: now)
+        let result = ClaudeRateReader.inspect(filePath: usageFile, cachePath: cacheFile,
+                                              desktopHistoryPath: tempDir.appendingPathComponent("desktop.json"), now: now)
         XCTAssertEqual(result.status, .available)
         XCTAssertEqual(result.rate?.fiveHourPct, 12.0)
         XCTAssertEqual(result.rate?.sevenDayPct, 34.0)
@@ -67,7 +68,8 @@ final class RateReaderTests: XCTestCase {
             to: usageFile,
             modDate: now
         )
-        _ = ClaudeRateReader.inspect(filePath: usageFile, cachePath: cacheFile, now: now)
+        _ = ClaudeRateReader.inspect(filePath: usageFile, cachePath: cacheFile,
+                                     desktopHistoryPath: tempDir.appendingPathComponent("desktop.json"), now: now)
 
         try writeJSON(
             [
@@ -82,6 +84,7 @@ final class RateReaderTests: XCTestCase {
         let result = ClaudeRateReader.inspect(
             filePath: usageFile,
             cachePath: cacheFile,
+            desktopHistoryPath: tempDir.appendingPathComponent("desktop.json"),
             now: now.addingTimeInterval(60)
         )
         XCTAssertEqual(result.status, .available)
@@ -105,9 +108,124 @@ final class RateReaderTests: XCTestCase {
             modDate: now
         )
 
-        let result = ClaudeRateReader.inspect(filePath: usageFile, cachePath: cacheFile, now: now)
+        let result = ClaudeRateReader.inspect(filePath: usageFile, cachePath: cacheFile,
+                                              desktopHistoryPath: tempDir.appendingPathComponent("desktop.json"), now: now)
         XCTAssertNil(result.rate)
         XCTAssertEqual(result.status, .rateLimitsUnavailable)
+    }
+
+    func testClaudeDesktopHistorySuppliesNewerSharedLimit() throws {
+        let now = Date(timeIntervalSince1970: 1_776_170_000)
+        let code = tempDir.appendingPathComponent("usage-rate.json")
+        let desktop = tempDir.appendingPathComponent("plan-usage-history.json")
+        let cache = tempDir.appendingPathComponent("rate-cache.json")
+        try writeJSON(["rate_limits": ["five_hour": ["used_percentage": 12.0],
+                                        "seven_day": ["used_percentage": 20.0]]],
+                      to: code, modDate: now.addingTimeInterval(-3600))
+        try writeJSON(["version": 2, "samples": [
+            ["t": (now.timeIntervalSince1970 - 120) * 1000, "org": "test", "u": ["fh": 45, "sd": 27]],
+            ["t": (now.timeIntervalSince1970 - 60) * 1000, "org": "test", "u": ["fh": 78, "sd": 35]],
+        ]], to: desktop, modDate: now)
+
+        let result = ClaudeRateReader.inspect(filePath: code, cachePath: cache,
+                                              desktopHistoryPath: desktop, now: now)
+        XCTAssertEqual(result.status, .available)
+        XCTAssertEqual(result.rate?.fiveHourPct, 78)
+        XCTAssertEqual(result.rate?.sevenDayPct, 35)
+        XCTAssertNil(result.rate?.fiveHourResetsAt)
+    }
+
+    func testClaudeDesktopHistoryWorksWithoutClaudeCodeSnapshot() throws {
+        let now = Date(timeIntervalSince1970: 1_776_170_000)
+        let desktop = tempDir.appendingPathComponent("plan-usage-history.json")
+        try writeJSON(["version": 2, "samples": [
+            ["t": (now.timeIntervalSince1970 - 30) * 1000, "u": ["fh": 0, "sd": 9]],
+        ]], to: desktop, modDate: now)
+
+        let result = ClaudeRateReader.inspect(
+            filePath: tempDir.appendingPathComponent("missing-code.json"),
+            cachePath: tempDir.appendingPathComponent("missing-cache.json"),
+            desktopHistoryPath: desktop,
+            now: now
+        )
+        XCTAssertEqual(result.status, .available)
+        XCTAssertEqual(result.rate?.fiveHourPct, 0)
+        XCTAssertEqual(result.rate?.sevenDayPct, 9)
+    }
+
+    func testClaudeDesktopHistoryRejectsStaleAndInvalidSamples() throws {
+        let now = Date(timeIntervalSince1970: 1_776_170_000)
+        let desktop = tempDir.appendingPathComponent("plan-usage-history.json")
+        try writeJSON(["version": 2, "samples": [
+            ["t": (now.timeIntervalSince1970 - 7 * 3600) * 1000,
+             "u": ["fh": 75, "sd": 30]],
+            ["t": (now.timeIntervalSince1970 - 60) * 1000,
+             "u": ["fh": 120, "sd": -1]],
+            ["t": (now.timeIntervalSince1970 + 60) * 1000,
+             "u": ["fh": 55, "sd": 32]],
+        ]], to: desktop, modDate: now)
+        XCTAssertNil(ClaudeDesktopRateReader.read(historyPath: desktop, now: now))
+    }
+
+    func testClaudeDesktopSnapshotStopsDisplayingAfterThirtyMinutes() throws {
+        let now = Date(timeIntervalSince1970: 1_776_170_000)
+        let desktop = tempDir.appendingPathComponent("plan-usage-history.json")
+        try writeJSON(["version": 2, "samples": [
+            ["t": (now.timeIntervalSince1970 - 31 * 60) * 1000, "u": ["fh": 84, "sd": 19]],
+        ]], to: desktop, modDate: now)
+
+        let result = ClaudeRateReader.inspect(
+            filePath: tempDir.appendingPathComponent("missing-code.json"),
+            cachePath: tempDir.appendingPathComponent("missing-cache.json"),
+            desktopHistoryPath: desktop,
+            now: now
+        )
+        XCTAssertNil(result.rate)
+        XCTAssertEqual(result.status, .waitingForSessionData)
+    }
+
+    func testClaudeDesktopRejectsUnknownHistoryVersion() throws {
+        let now = Date(timeIntervalSince1970: 1_776_170_000)
+        let desktop = tempDir.appendingPathComponent("plan-usage-history.json")
+        try writeJSON(["version": 3, "samples": [
+            ["t": now.timeIntervalSince1970 * 1000, "u": ["fh": 84, "sd": 19]],
+        ]], to: desktop, modDate: now)
+        XCTAssertNil(ClaudeDesktopRateReader.read(historyPath: desktop, now: now))
+    }
+
+    func testClaudeCodeDropsResetFiveHourWindowButKeepsWeeklyWindow() throws {
+        let now = Date(timeIntervalSince1970: 1_776_170_000)
+        let code = tempDir.appendingPathComponent("usage-rate.json")
+        let cache = tempDir.appendingPathComponent("rate-cache.json")
+        try writeJSON(["rate_limits": [
+            "five_hour": ["used_percentage": 84.0,
+                          "resets_at": now.timeIntervalSince1970 - 60],
+            "seven_day": ["used_percentage": 19.0,
+                          "resets_at": now.timeIntervalSince1970 + 86400],
+        ]], to: code, modDate: now.addingTimeInterval(-3600))
+
+        let result = ClaudeRateReader.inspect(filePath: code, cachePath: cache,
+                                              desktopHistoryPath: tempDir.appendingPathComponent("desktop.json"), now: now)
+        XCTAssertEqual(result.status, .available)
+        XCTAssertNil(result.rate?.fiveHourPct)
+        XCTAssertEqual(result.rate?.sevenDayPct, 19)
+        XCTAssertTrue(result.rate?.isWeeklyOnly == true)
+    }
+
+    func testClaudeCodeWinsWhenItsSnapshotIsNewerThanDesktop() throws {
+        let now = Date(timeIntervalSince1970: 1_776_170_000)
+        let code = tempDir.appendingPathComponent("usage-rate.json")
+        let desktop = tempDir.appendingPathComponent("plan-usage-history.json")
+        let cache = tempDir.appendingPathComponent("rate-cache.json")
+        try writeJSON(["rate_limits": ["five_hour": ["used_percentage": 13.0]]],
+                      to: code, modDate: now)
+        try writeJSON(["version": 2, "samples": [
+            ["t": (now.timeIntervalSince1970 - 60) * 1000, "u": ["fh": 78]],
+        ]], to: desktop, modDate: now)
+
+        let result = ClaudeRateReader.inspect(filePath: code, cachePath: cache,
+                                              desktopHistoryPath: desktop, now: now)
+        XCTAssertEqual(result.rate?.fiveHourPct, 13)
     }
 
     func testCodexReadAcceptsTopLevelRateLimits() throws {
@@ -278,7 +396,8 @@ final class RateReaderTests: XCTestCase {
         let cache = tempDir.appendingPathComponent("rate-cache.json")
         try writeJSON(["rate_limits": ["seven_day": ["used_percentage": 42.0],
                                       "five_hour": ["used_percentage": -10.0]]], to: file, modDate: now)
-        let result = ClaudeRateReader.inspect(filePath: file, cachePath: cache, now: now)
+        let result = ClaudeRateReader.inspect(filePath: file, cachePath: cache,
+                                              desktopHistoryPath: tempDir.appendingPathComponent("desktop.json"), now: now)
         XCTAssertEqual(result.rate?.headlinePct, 42)
         XCTAssertTrue(result.rate?.isWeeklyOnly == true)
     }

@@ -1,6 +1,6 @@
 # aimeter
 
-macOS menu bar app，监控 Claude Code 和 Codex CLI 的用量。
+macOS menu bar app，显示 Claude 共用订阅额度，以及 Claude Code 和 Codex CLI 的本地用量。
 
 ## 构建
 
@@ -22,8 +22,10 @@ swift test           # 跑单元测试（SPM，不走 Makefile，不链接 Spark
 
 SwiftUI + AppKit + Sparkle（自动更新）。app 本体用 `swiftc` 通过 Makefile 直接编译，包含 Sparkle 作为 embedded framework；`Package.swift` 只用于跑 SPM 测试（`swift test`），**不声明 Sparkle**，Sources/ 里 Sparkle 代码全部用 `#if canImport(Sparkle)` 隔离——测试不链接 Sparkle，避免 Xcode test bundle 因 Library Validation 加载不了 Sparkle-signed framework。
 
-- **数据层**：两个独立来源
+- **数据层**：Claude 与 Codex 两个服务，各自读取本地来源
   - Claude Code：`~/.claude/projects/**/*.jsonl`（JSONL 对话日志）+ `~/.claude/usage-rate.json`（statusline hook 写入的 rate limit）
+  - Claude Desktop：`~/Library/Application Support/Claude/plan-usage-history.json`（5H/7D 共用订阅额度快照；不含 token/费用）
+    - 此文件不一定随 Claude 用量页刷新；只信任 30 分钟内的样本，超过后显示不可用，避免重置后继续显示旧百分比
   - Codex：`~/.codex/sessions/**/rollout-*.jsonl`（`token_count` 使用量增量 + `rate_limits` 百分比）
 - **路径层**：默认读 `~/.claude` / `~/.codex`，Settings 的 Paths 可改根目录；`AppPaths` 统一派生 projects、sessions、settings、rate cache 路径
 - **定价层**：从 LiteLLM GitHub 拉取最新定价，缓存到 `~/Library/Caches/com.aimeter.app/pricing.json`（24h TTL）；长驻进程会在缓存过期后刷新，失败后 15 分钟重试，离线用硬编码默认值
@@ -40,7 +42,7 @@ SwiftUI + AppKit + Sparkle（自动更新）。app 本体用 `swiftc` 通过 Mak
 | AppPaths.swift | Claude/Codex 根目录配置和派生路径 |
 | SetupHelper.swift | 首次启动检测 + 自动注入 statusline tee |
 | UsageStore.swift | ObservableObject，两阶段异步加载（Stage 1 rate limit → Stage 2 JSONL） |
-| RateReader.swift | 读 Claude statusline JSON + Codex 近期 session JSONL 中最新有效的 rate_limits |
+| RateReader.swift | 从 Claude Code statusline 与 Claude Desktop 取较新的有效额度快照；读取 Codex 近期 session JSONL 中最新有效的 rate_limits |
 | CodexReader.swift | 解析 Codex session JSONL 的 token_count 增量、模型和费用输入 |
 | Pricing.swift | LiteLLM 定价获取/缓存/阶梯计费 |
 | Models.swift | UsageEntry, DailyUsage, ModelUsage |
@@ -52,7 +54,7 @@ SwiftUI + AppKit + Sparkle（自动更新）。app 本体用 `swiftc` 通过 Mak
 
 ## 关键设计决策
 
-- **Rate limit 百分比来自服务端**，不本地计算。Claude 通过 statusline hook（`tee` 写文件），Codex 从 session JSONL 的 `token_count` 事件读取。
+- **Rate limit 百分比来自服务端**，不本地计算。Claude 取 Claude Code statusline hook（`tee` 写文件）或 Claude Desktop 本地快照中较新的有效值；Codex 从 session JSONL 的 `token_count` 事件读取。
 - **首次启动自动配置 statusline hook**：避免用户手动改 settings.json，弹一次性对话框获得授权。
 - **费用采用 ccusage 的 auto 模式**：JSONL 有 `costUSD` 字段就用，没有就按 LiteLLM 定价计算。
 - **Codex 费用按 session JSONL 的 token 拆分计算**：优先用 `last_token_usage`，缺失时用 `total_token_usage` 和上一条状态做差。

@@ -13,6 +13,7 @@ aimeter runs entirely on your local machine. It reads from the default roots
 
 - `<Claude root>/projects/**/*.jsonl` — Claude Code conversation logs
 - `<Claude root>/usage-rate.json` — rate-limit snapshot written by the statusline hook
+- `~/Library/Application Support/Claude/plan-usage-history.json` — Claude Desktop subscription-limit snapshots (percentages only)
 - `<Claude root>/settings.json` — inspected or edited only for hook setup/removal
 - `<Codex root>/sessions/**/rollout-*.jsonl` — Codex token-count and rate-limit events
 

@@ -105,9 +105,10 @@ struct DetailView: View {
         VStack(alignment: .leading, spacing: 4) {
             if UsageStore.claudeInstalled {
                 rateCard(
-                    name: "Claude Code",
+                    name: "Claude",
                     rate: store.claudeRate,
-                    emptyMessage: claudeEmptyRateMessage
+                    emptyMessage: claudeEmptyRateMessage,
+                    showSnapshotTime: true
                 )
             }
             if UsageStore.codexInstalled {
@@ -128,7 +129,8 @@ struct DetailView: View {
         }
     }
 
-    private func rateCard(name: String, rate: RateLimit?, emptyMessage: String = S.noData) -> some View {
+    private func rateCard(name: String, rate: RateLimit?, emptyMessage: String = S.noData,
+                          showSnapshotTime: Bool = false) -> some View {
         let hasRate = rate?.fiveHourPct != nil || rate?.sevenDayPct != nil
         let weeklyIsHeadline = rate?.isWeeklyOnly == true
 
@@ -203,6 +205,11 @@ struct DetailView: View {
                     .opacity(0.6)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.top, 5)
+            } else if showSnapshotTime, let updatedAt = rate?.updatedAt {
+                Text(S.snapshotTime(updatedAt))
+                    .font(Font2.meta)
+                    .foregroundColor(.secondary)
+                    .padding(.top, 3)
             }
         }
     }
@@ -259,6 +266,10 @@ struct DetailView: View {
                 StatCell(value: "\(today.messageCount)", label: S.messages)
             }
             .redacted(reason: isInitialLoad ? .placeholder : [])
+
+            Text(S.localTokenScope)
+                .font(Font2.meta)
+                .foregroundStyle(.secondary)
 
             if !models.isEmpty {
                 let peak = models.map(\.tokens).max() ?? 1

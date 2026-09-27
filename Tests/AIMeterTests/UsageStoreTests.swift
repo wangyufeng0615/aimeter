@@ -396,6 +396,36 @@ final class UsageStoreTests: XCTestCase {
     }
 
     @MainActor
+    func testClaudeMenuClearsExpiredSnapshotInsteadOfKeepingOldPercentage() {
+        let now = Date(timeIntervalSince1970: 1_776_150_250)
+        let rate = RateLimit(
+            fiveHourPct: 84,
+            sevenDayPct: 19,
+            fiveHourResetsAt: nil,
+            sevenDayResetsAt: nil,
+            updatedAt: now
+        )
+        var snapshot: (rate: RateLimit?, status: ClaudeRateStatus) = (rate, .available)
+        let store = UsageStore(
+            projectsDir: tempDir,
+            autoload: false,
+            autoRefresh: false,
+            now: { now },
+            claudeRateSnapshotReader: { snapshot },
+            codexRateReader: { nil },
+            codexEntriesReader: { _ in [] },
+            pricingLoader: {}
+        )
+
+        store.refreshSynchronouslyForTesting()
+        XCTAssertEqual(store.claudeMenuText, "Claude 84%")
+        snapshot = (nil, .waitingForSessionData)
+        store.refreshSynchronouslyForTesting()
+        XCTAssertNil(store.claudeRate)
+        XCTAssertEqual(store.claudeMenuText, "Claude —")
+    }
+
+    @MainActor
     func testCodexMenuPercentageFallsBackToWeeklyOnlyWindow() {
         let now = Date(timeIntervalSince1970: 1_783_900_100)
         let weeklyOnly = RateLimit(

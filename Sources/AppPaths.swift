@@ -32,6 +32,10 @@ enum AppPaths {
         claudeRoot.appendingPathComponent("usage-rate.json")
     }
 
+    static var claudeDesktopUsageHistoryFile: URL {
+        home.appendingPathComponent("Library/Application Support/Claude/plan-usage-history.json")
+    }
+
     static var claudeSettingsFile: URL {
         claudeRoot.appendingPathComponent("settings.json")
     }

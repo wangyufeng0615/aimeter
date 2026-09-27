@@ -24,7 +24,7 @@ struct AIMeterApp: App {
             HStack(spacing: 3) {
                 if store.showCodex && UsageStore.claudeInstalled,
                    let image = imageCache.image(
-                       top: "Claude \(Int(store.claudePct))%",
+                       top: store.claudeMenuText,
                        bottom: store.codexMenuText
                    ) {
                     Image(nsImage: image)

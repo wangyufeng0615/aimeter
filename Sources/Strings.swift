@@ -32,10 +32,17 @@ enum S {
     static var settings: String     { zh ? "设置" : "Settings" }
     static var title: String        { "aimeter" }
     static var noData: String       { zh ? "等待会话数据…" : "Waiting for session data…" }
+    static var localTokenScope: String {
+        zh ? "Token / 费用：仅 Claude Code 和 Codex" : "Tokens / cost: Claude Code and Codex only"
+    }
+    static func snapshotTime(_ date: Date) -> String {
+        let time = date.formatted(date: .omitted, time: .shortened)
+        return zh ? "额度快照更新于 \(time)" : "Limit snapshot updated at \(time)"
+    }
     static var claudeRateWaiting: String {
         zh
-            ? "在 Claude Code 里发一条消息即可显示 5H / 7D 限额"
-            : "Send a message in Claude Code to populate 5H / 7D limits."
+            ? "在 Claude 桌面版或 Claude Code 使用后显示 5H / 7D 限额"
+            : "Use Claude Desktop or Claude Code to populate 5H / 7D limits."
     }
     static var codexRateWaiting: String {
         zh

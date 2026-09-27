@@ -6,7 +6,7 @@
 
 [English README](README.md)
 
-一个轻量级 macOS 菜单栏应用，实时监控你的 [Claude Code](https://code.claude.com/) 和 [Codex CLI](https://github.com/openai/codex) 用量。
+一个轻量级 macOS 菜单栏应用，显示 Claude 订阅共用额度，以及本地 [Claude Code](https://code.claude.com/) 和 [Codex CLI](https://github.com/openai/codex) 活动。
 
 > 作者日常自用的工具，会精心长期维护。
 
@@ -16,10 +16,9 @@
 
 ## 特性
 
-- 准确显示 5 小时限额 / 周限额
-- 展示 token 用量和费用
-- 只用 Claude Code / Codex 其中一个？另一个的面板会自动隐藏
-- 用量和 rate limit 数据都从本地 CLI 文件读取，不上传使用数据
+- 从桌面版或 Claude Code 的本地记录显示 5 小时 / 周额度快照；超过 30 分钟的桌面快照不再显示
+- 展示本地 Claude Code 和 Codex 日志中的 token 用量和费用（不包含桌面聊天）
+- Claude 限额读取桌面版或 Claude Code 较新的本地记录，不上传使用数据
 
 ## 安装
 

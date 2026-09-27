@@ -37,6 +37,7 @@ struct SettingsView: View {
                             .foregroundStyle(.secondary)
                         privacyItem("\(AppPaths.displayPath(AppPaths.claudeProjectsDir))/**/*.jsonl")
                         privacyItem(AppPaths.displayPath(AppPaths.claudeRateFile))
+                        privacyItem(AppPaths.displayPath(AppPaths.claudeDesktopUsageHistoryFile))
                         privacyItem(AppPaths.displayPath(AppPaths.claudeSettingsFile)
                             + "  (" + (S.zh ? "仅用于安装 hook" : "to install the hook") + ")")
                         privacyItem("\(AppPaths.displayPath(AppPaths.codexSessionsDir))/**/rollout-*.jsonl")
@@ -107,6 +108,19 @@ struct SettingsView: View {
             }
 
             Section(header: sectionHeader(S.zh ? "集成" : "Integration")) {
+                LabeledContent("Claude Desktop") {
+                    StatusBadge(status: UsageStore.claudeDesktopHistoryAvailable ? .ok : .muted,
+                                text: UsageStore.claudeDesktopHistoryAvailable
+                                    ? (S.zh ? "已检测到额度记录" : "Usage history found")
+                                    : (S.zh ? "无额度记录" : "No usage history"))
+                }
+                Text(S.zh
+                    ? "读取桌面版的本地额度快照。记录超过 30 分钟时不显示百分比；桌面聊天的 token 和费用不包含在记录中。"
+                    : "Reads local Desktop limit snapshots. Percentages disappear after 30 minutes without a new sample; desktop chat tokens and cost are not recorded.")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
                 LabeledContent("Claude Code") {
                     StatusBadge(status: hookInstalled ? .ok : .warn,
                                 text: hookInstalled

@@ -8,7 +8,7 @@ enum SetupHelper {
 
     /// Check on launch and prompt user if needed. Call from main thread.
     static func checkOnLaunch() {
-        guard UsageStore.claudeInstalled else { return }
+        guard UsageStore.claudeCodeInstalled else { return }
         guard !isAlreadyConfigured() else { return }
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) {

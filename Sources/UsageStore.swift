@@ -191,8 +191,16 @@ final class UsageStore: ObservableObject {
 
     // MARK: - Installed detection
 
-    static var claudeInstalled: Bool {
+    static var claudeCodeInstalled: Bool {
         FileManager.default.fileExists(atPath: AppPaths.claudeRoot.path)
+    }
+
+    static var claudeDesktopHistoryAvailable: Bool {
+        FileManager.default.fileExists(atPath: AppPaths.claudeDesktopUsageHistoryFile.path)
+    }
+
+    static var claudeInstalled: Bool {
+        claudeCodeInstalled || claudeDesktopHistoryAvailable
     }
 
     static var codexInstalled: Bool {
@@ -201,7 +209,9 @@ final class UsageStore: ObservableObject {
 
     // MARK: - Menu bar
 
-    var claudePct: Double { claudeRate?.headlinePct ?? 0 }
+    var claudeMenuText: String {
+        claudeRate?.headlinePct.map { "Claude \(Int($0))%" } ?? "Claude —"
+    }
     var codexMenuText: String {
         codexRate?.headlinePct.map { "Codex \(Int($0))%" } ?? "Codex —"
     }
@@ -209,7 +219,7 @@ final class UsageStore: ObservableObject {
 
     /// Single-provider fallback text (used when only one is installed)
     var menuBarText: String {
-        if Self.claudeInstalled { return "Claude \(Int(claudePct))%" }
+        if Self.claudeInstalled { return claudeMenuText }
         if Self.codexInstalled  { return codexMenuText }
         return "—"
     }
@@ -395,17 +405,7 @@ final class UsageStore: ObservableObject {
     }
 
     private func applyRateLimits(claude: RateLimit?, claudeStatus: ClaudeRateStatus, codex: RateLimit?) {
-        if let claude {
-            if claudeRate != claude {
-                claudeRate = claude
-            }
-        } else if let existing = claudeRate,
-                  existing.updatedAt.timeIntervalSinceNow > -6 * 3600,
-                  claudeStatus != .available {
-            // Keep the last good Claude limit snapshot across transient empty statusline payloads.
-        } else if claudeRate != nil {
-            claudeRate = nil
-        }
+        if claudeRate != claude { claudeRate = claude }
         if self.claudeRateStatus != claudeStatus {
             self.claudeRateStatus = claudeStatus
         }

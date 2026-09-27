@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.3.11] - 2026-09-27
+
+### Added
+- Read Claude Desktop's local 5-hour and 7-day subscription-limit snapshots alongside Claude Code's statusline snapshots, choosing the newer valid source.
+- Show when the Claude limit snapshot was recorded and clarify that token and cost totals cover local Claude Code and Codex logs only.
+
+### Fixed
+- Stop showing a Desktop limit after its snapshot is 30 minutes old, or a Claude Code window after its recorded reset; show unavailable data as `—` rather than `0%`.
+
 ## [0.3.10] - 2026-09-24
 
 ### Added

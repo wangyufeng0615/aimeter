@@ -27,11 +27,12 @@ func normalizeTimestamp(_ value: Double) -> Date {
         : Date(timeIntervalSince1970: value)
 }
 
-// MARK: - Claude Code rate limits (from statusline JSON)
+// MARK: - Claude subscription limits (from Code statusline or Desktop history)
 
 enum ClaudeRateReader {
     private static var defaultFilePath: URL { AppPaths.claudeRateFile }
     private static var defaultCachePath: URL { AppPaths.claudeRateCacheFile() }
+    private static var defaultDesktopPath: URL { AppPaths.claudeDesktopUsageHistoryFile }
 
     static func read() -> RateLimit? {
         inspect().rate
@@ -44,7 +45,21 @@ enum ClaudeRateReader {
     static func inspect(
         filePath: URL = defaultFilePath,
         cachePath: URL = defaultCachePath,
+        desktopHistoryPath: URL = defaultDesktopPath,
         now: Date = Date()
+    ) -> (rate: RateLimit?, status: ClaudeRateStatus) {
+        let code = inspectCode(filePath: filePath, cachePath: cachePath, now: now)
+        guard let desktop = ClaudeDesktopRateReader.read(historyPath: desktopHistoryPath, now: now),
+              code.rate.map({ desktop.updatedAt > $0.updatedAt }) ?? true else {
+            return code
+        }
+        return (desktop, .available)
+    }
+
+    private static func inspectCode(
+        filePath: URL,
+        cachePath: URL,
+        now: Date
     ) -> (rate: RateLimit?, status: ClaudeRateStatus) {
         guard FileManager.default.fileExists(atPath: filePath.path) else {
             return cachedResult(cachePath: cachePath, now: now) ?? (nil, .waitingForSessionData)
@@ -93,17 +108,39 @@ enum ClaudeRateReader {
             updatedAt: modDate
         )
         writeCache(rate, to: cachePath)
-        return (
-            rate,
-            .available
-        )
+        guard let active = activeCodeWindows(rate, now: now) else {
+            return (nil, .waitingForSessionData)
+        }
+        return (active, .available)
     }
 
     private static func cachedResult(cachePath: URL, now: Date) -> (rate: RateLimit, status: ClaudeRateStatus)? {
-        guard let cached = readCache(from: cachePath), now.timeIntervalSince(cached.updatedAt) < 6 * 3600 else {
+        guard let cached = readCache(from: cachePath),
+              let active = activeCodeWindows(cached, now: now) else {
             return nil
         }
-        return (cached, .available)
+        return (active, .available)
+    }
+
+    private static func activeCodeWindows(_ rate: RateLimit, now: Date) -> RateLimit? {
+        let age = now.timeIntervalSince(rate.updatedAt)
+        guard age >= 0, age < 6 * 3600 else { return nil }
+        let fiveHourActive = rate.fiveHourResetsAt.map { now < $0 } ?? (age < 5 * 3600)
+        let sevenDayActive = rate.sevenDayResetsAt.map { now < $0 } ?? true
+        let fiveHour = rate.fiveHourPct.flatMap { pct in
+            fiveHourActive ? pct : nil
+        }
+        let sevenDay = rate.sevenDayPct.flatMap { pct in
+            sevenDayActive ? pct : nil
+        }
+        guard fiveHour != nil || sevenDay != nil else { return nil }
+        return RateLimit(
+            fiveHourPct: fiveHour,
+            sevenDayPct: sevenDay,
+            fiveHourResetsAt: fiveHour == nil ? nil : rate.fiveHourResetsAt,
+            sevenDayResetsAt: sevenDay == nil ? nil : rate.sevenDayResetsAt,
+            updatedAt: rate.updatedAt
+        )
     }
 
     private static func validPercentage(_ raw: Any?) -> Double? {
@@ -153,6 +190,48 @@ enum ClaudeRateReader {
             attributes: nil
         )
         try? data.write(to: path, options: .atomic)
+    }
+}
+
+enum ClaudeDesktopRateReader {
+    /// Desktop records server usage snapshots without reset times or token counts.
+    /// The sample timestamp, rather than the file mtime, determines freshness.
+    private static let maxSnapshotAge: TimeInterval = 30 * 60
+
+    static func read(historyPath: URL, now: Date = Date()) -> RateLimit? {
+        guard let size = (try? FileManager.default.attributesOfItem(atPath: historyPath.path))?[.size] as? NSNumber,
+              size.intValue <= 8 * 1024 * 1024,
+              let data = try? Data(contentsOf: historyPath),
+              let history = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              history["version"] as? Int == 2,
+              let samples = history["samples"] as? [[String: Any]] else { return nil }
+
+        var latest: RateLimit?
+        for sample in samples {
+            guard let milliseconds = sample["t"] as? Double, milliseconds.isFinite,
+                  milliseconds > 0,
+                  let usage = sample["u"] as? [String: Any] else { continue }
+            let timestamp = Date(timeIntervalSince1970: milliseconds / 1000)
+            let age = now.timeIntervalSince(timestamp)
+            guard age >= 0, age < maxSnapshotAge else { continue }
+            func percentage(_ key: String) -> Double? {
+                guard let value = usage[key] as? Double,
+                      value.isFinite, (0...100).contains(value) else { return nil }
+                return value
+            }
+            let fiveHour = percentage("fh")
+            let sevenDay = percentage("sd")
+            guard fiveHour != nil || sevenDay != nil else { continue }
+            let rate = RateLimit(
+                fiveHourPct: fiveHour,
+                sevenDayPct: sevenDay,
+                fiveHourResetsAt: nil,
+                sevenDayResetsAt: nil,
+                updatedAt: timestamp
+            )
+            if latest.map({ timestamp > $0.updatedAt }) ?? true { latest = rate }
+        }
+        return latest
     }
 }
 
