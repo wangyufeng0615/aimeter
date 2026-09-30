@@ -68,6 +68,14 @@ final class SetupHelperTests: XCTestCase {
         XCTAssertEqual(SetupHelper.preflight(at: settingsFile), .symlink)
     }
 
+    func testInjectTeePreservesDanglingSymlink() throws {
+        let missingTarget = tempDir.appendingPathComponent("missing.json")
+        try FileManager.default.createSymbolicLink(at: settingsFile, withDestinationURL: missingTarget)
+        XCTAssertEqual(SetupHelper.preflight(at: settingsFile), .symlink)
+        XCTAssertEqual(SetupHelper.injectTee(at: settingsFile), .failed(.symlink))
+        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: settingsFile.path), missingTarget.path)
+    }
+
     func testPreflightDetectsMalformedJSON() throws {
         try Data("not json {".utf8).write(to: settingsFile)
         XCTAssertEqual(SetupHelper.preflight(at: settingsFile), .malformed)
@@ -194,6 +202,42 @@ final class SetupHelperTests: XCTestCase {
 
         let cmd = (readJSON()?["statusLine"] as? [String: Any])?["command"] as? String
         XCTAssertEqual(cmd, "powerline-statusline")
+    }
+
+    func testUninstallHookPreservesSymlinkAndTarget() throws {
+        let target = tempDir.appendingPathComponent("real-settings.json")
+        let original = try JSONSerialization.data(withJSONObject: [
+            "statusLine": ["type": "command", "command": SetupHelper.teeFragment]
+        ])
+        try original.write(to: target)
+        try FileManager.default.createSymbolicLink(at: settingsFile, withDestinationURL: target)
+
+        XCTAssertFalse(SetupHelper.uninstallHook(at: settingsFile))
+        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: settingsFile.path), target.path)
+        XCTAssertEqual(try Data(contentsOf: target), original)
+    }
+
+    func testUninstallHookDoesNotRewriteUnrecognizedCommand() throws {
+        for command in ["echo tee usage-rate.json", "tee ~/.claude/usage-rate.json.backup | echo"] {
+            try writeJSON(["statusLine": ["type": "command", "command": command]])
+            let original = try Data(contentsOf: settingsFile)
+            XCTAssertFalse(SetupHelper.uninstallHook(at: settingsFile))
+            XCTAssertEqual(try Data(contentsOf: settingsFile), original)
+        }
+    }
+
+    func testInstallThenUninstallPreservesOriginalSettings() throws {
+        let original: [String: Any] = [
+            "statusLine": ["type": "command", "command": "powerline-statusline", "padding": 2],
+            "otherSetting": "preserve"
+        ]
+        try writeJSON(original)
+        XCTAssertEqual(SetupHelper.injectTee(at: settingsFile), .success)
+        XCTAssertTrue(SetupHelper.uninstallHook(at: settingsFile))
+        XCTAssertEqual(readJSON() as NSDictionary?, original as NSDictionary)
+        let backups = try FileManager.default.contentsOfDirectory(atPath: tempDir.path)
+            .filter { $0.hasPrefix("settings.json.bak-") }
+        XCTAssertEqual(backups.count, 2)
     }
 
     // MARK: - cleanupBackups

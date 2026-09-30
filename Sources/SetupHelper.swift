@@ -38,27 +38,25 @@ enum SetupHelper {
     /// Uninstall the tee hook (restore statusLine to what it was without our prefix).
     @discardableResult
     static func uninstallHook(at settingsFile: URL = SetupHelper.settingsFile) -> Bool {
-        guard var json = readSettings(at: settingsFile) else { return false }
+        guard preflight(at: settingsFile) == nil,
+              let originalData = try? Data(contentsOf: settingsFile),
+              var json = (try? JSONSerialization.jsonObject(with: originalData)) as? [String: Any]
+        else { return false }
         guard let sl = json["statusLine"] as? [String: Any],
               let cmd = sl["command"] as? String,
               cmd.contains("tee"), cmd.contains("usage-rate.json")
         else { return false }
 
-        // Backup before mutating
-        let stamp = Int(Date().timeIntervalSince1970)
-        _ = try? FileManager.default.copyItem(
-            atPath: settingsFile.path,
-            toPath: settingsFile.path + ".bak-\(stamp)")
-
         // Remove any tee prefix that writes to a usage-rate.json file.
         // Handles both unquoted (tee ~/.claude/usage-rate.json) and shell-quoted
         // forms (tee '/weird path/usage-rate.json'), including shell-escaped
         // single quotes inside the quoted path.
-        let pattern = #"^tee\s+[^|]*?usage-rate\.json'?\s*(?:\|\s*)?"#
+        let pattern = #"^tee\s+[^|]*?usage-rate\.json'?\s*(?:\|\s*|$)"#
         let regex = try? NSRegularExpression(pattern: pattern)
         let range = NSRange(cmd.startIndex..., in: cmd)
         let stripped = regex?.stringByReplacingMatches(
             in: cmd, range: range, withTemplate: "") ?? cmd
+        guard stripped != cmd else { return false }
         let trimmed = stripped.trimmingCharacters(in: .whitespaces)
 
         if trimmed.isEmpty {
@@ -73,6 +71,10 @@ enum SetupHelper {
             withJSONObject: json,
             options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
         else { return false }
+        guard preflight(at: settingsFile) == nil,
+              (try? Data(contentsOf: settingsFile)) == originalData,
+              backupSettings(at: settingsFile) else { return false }
+        cleanupBackups(at: settingsFile, keeping: 3)
         return ((try? data.write(to: settingsFile, options: .atomic)) != nil)
     }
 
@@ -145,15 +147,14 @@ enum SetupHelper {
     }
 
     static func preflight(at settingsFile: URL = SetupHelper.settingsFile) -> PreflightIssue? {
-        guard FileManager.default.fileExists(atPath: settingsFile.path) else {
-            // No settings file yet — safe to create from scratch
-            return nil
-        }
-
-        // Reject symlinks — atomic write would replace the target, breaking semantics
+        // Check links before fileExists, which follows the target and misses dangling links.
         if let attrs = try? FileManager.default.attributesOfItem(atPath: settingsFile.path),
            let type = attrs[.type] as? FileAttributeType, type == .typeSymbolicLink {
             return .symlink
+        }
+
+        guard FileManager.default.fileExists(atPath: settingsFile.path) else {
+            return nil
         }
 
         guard let data = try? Data(contentsOf: settingsFile) else {
@@ -223,15 +224,19 @@ enum SetupHelper {
             if currentMtime != originalMtime { return .failed(.unexpectedFormat) }
 
             // Backup before write
-            let stamp = Int(Date().timeIntervalSince1970)
-            let backup = settingsFile.path + ".bak-\(stamp)"
-            guard (try? FileManager.default.copyItem(atPath: settingsFile.path, toPath: backup)) != nil
-            else { return .failed(.unreadable) }
+            guard backupSettings(at: settingsFile) else { return .failed(.unreadable) }
             cleanupBackups(at: settingsFile, keeping: 3)
         }
 
         return ((try? newData.write(to: settingsFile, options: .atomic)) != nil)
             ? .success : .failed(.unreadable)
+    }
+
+    /// A unique suffix permits install and uninstall within the same second.
+    private static func backupSettings(at settingsFile: URL) -> Bool {
+        let stamp = Int(Date().timeIntervalSince1970 * 1_000_000)
+        let backup = settingsFile.path + ".bak-\(stamp)-\(UUID().uuidString)"
+        return (try? FileManager.default.copyItem(atPath: settingsFile.path, toPath: backup)) != nil
     }
 
     /// Keep only the most recent N backup files

@@ -18,6 +18,38 @@ final class CodexReaderTests: XCTestCase {
         tempDir = nil
     }
 
+    func testReadEntriesSkipsInvalidTokenNumbersAndContinues() throws {
+        let sessionsDir = try makeSessionsDir()
+        let file = sessionsDir.appendingPathComponent("rollout-invalid-tokens.jsonl")
+        let start = Date(timeIntervalSince1970: 1_776_150_000)
+        var lines = [try jsonLine([
+            "timestamp": iso(start), "type": "turn_context", "payload": ["model": "gpt-5.4"]
+        ])]
+        let invalidValues: [Any] = [-1, 1.5, "100", 1e100]
+        for value in invalidValues {
+            lines.append(try jsonLine([
+                "timestamp": iso(start), "type": "event_msg",
+                "payload": ["type": "token_count", "info": [
+                    "last_token_usage": ["input_tokens": value, "output_tokens": 5, "total_tokens": 105]
+                ]]
+            ]))
+        }
+        lines.append(try jsonLine([
+            "timestamp": iso(start), "type": "event_msg",
+            "payload": ["type": "token_count", "info": [
+                "last_token_usage": ["input_tokens": Int.max, "output_tokens": 1]
+            ]]
+        ]))
+        lines.append(try tokenCountLine(timestamp: start.addingTimeInterval(1), last: [
+            "input_tokens": 100, "output_tokens": 5, "total_tokens": 105
+        ], total: ["input_tokens": 100, "output_tokens": 5, "total_tokens": 105]))
+        try write(lines.joined(separator: "\n") + "\n", to: file)
+
+        let entries = try XCTUnwrap(CodexReader.readEntries(since: start, sessionsDir: sessionsDir))
+        XCTAssertEqual(entries.count, 1)
+        XCTAssertEqual(entries.map(\.inputTokens), [100])
+    }
+
     func testReadEntriesUsesLastTokenUsageAsDelta() throws {
         let sessionsDir = try makeSessionsDir()
         let file = sessionsDir.appendingPathComponent("2026/04/14/rollout-a.jsonl")

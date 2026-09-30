@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.13] - 2026-09-30
+
+### Fixed
+- Retry Claude log reads after temporary I/O failures without advancing the cached offset or losing previously recorded usage.
+- Preserve settings symlinks, including dangling links, and leave unrecognized statusline commands unchanged when removing the hook. Require a backup before removal and allow installation/removal within the same second.
+- Skip invalid Codex token counters, including negative, fractional, out-of-range, and overflowing values, without crashing or blocking subsequent valid records.
+
 ## [0.3.12] - 2026-09-30
 
 ### Fixed

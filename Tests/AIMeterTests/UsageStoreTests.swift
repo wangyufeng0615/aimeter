@@ -53,6 +53,47 @@ final class UsageStoreTests: XCTestCase {
     }
 
     @MainActor
+    func testClaudeRefreshRetriesUnreadableAppendedData() throws {
+        let projectsDir = try makeProjectsDir()
+        let logFile = projectsDir.appendingPathComponent("session.jsonl")
+        let now = Date(timeIntervalSince1970: 1_776_150_000)
+        try write(try usageLine(messageID: "m1", requestID: "r1", timestamp: now, input: 100) + "\n", to: logFile)
+        let store = makeStore(projectsDir: projectsDir, now: now)
+        store.refreshSynchronouslyForTesting()
+        try append(try usageLine(messageID: "m2", requestID: "r2", timestamp: now.addingTimeInterval(1), input: 200) + "\n", to: logFile)
+
+        try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: logFile.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: logFile.path) }
+        XCTAssertThrowsError(try Data(contentsOf: logFile), "fixture must be unreadable")
+        store.refreshSynchronouslyForTesting()
+        XCTAssertEqual(store.ccEntries.map(\.id), ["m1:r1"])
+
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: logFile.path)
+        store.refreshSynchronouslyForTesting()
+        XCTAssertEqual(store.ccEntries.map(\.id), ["m1:r1", "m2:r2"])
+        XCTAssertEqual(store.lastTokenLoadStats.incrementalFiles, 1)
+    }
+
+    @MainActor
+    func testClaudeRefreshRetriesUnreadableNewFile() throws {
+        let projectsDir = try makeProjectsDir()
+        let logFile = projectsDir.appendingPathComponent("session.jsonl")
+        let now = Date(timeIntervalSince1970: 1_776_150_000)
+        try write(try usageLine(messageID: "m1", requestID: "r1", timestamp: now, input: 100) + "\n", to: logFile)
+        try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: logFile.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: logFile.path) }
+        XCTAssertThrowsError(try Data(contentsOf: logFile), "fixture must be unreadable")
+        let store = makeStore(projectsDir: projectsDir, now: now)
+        store.refreshSynchronouslyForTesting()
+        XCTAssertTrue(store.ccEntries.isEmpty)
+
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: logFile.path)
+        store.refreshSynchronouslyForTesting()
+        XCTAssertEqual(store.ccEntries.map(\.id), ["m1:r1"])
+        XCTAssertEqual(store.lastTokenLoadStats.fullParsedFiles, 1)
+    }
+
+    @MainActor
     func testIncrementalRefreshCompletesBufferedPartialLine() throws {
         let projectsDir = try makeProjectsDir()
         let logFile = projectsDir.appendingPathComponent("session.jsonl")

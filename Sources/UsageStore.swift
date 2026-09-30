@@ -635,46 +635,40 @@ final class UsageStore: ObservableObject {
                 stats.reusedFiles += 1
                 newCache[path] = updated
                 fileEntries = cachedEntries
-            } else if let cached = cache[path],
-                      cached.fileID != nil,
-                      cached.fileID == fileID,
-                      size > cached.size {
-                let parsed = parseAppendedFile(url, fromOffset: cached.size, throughOffset: size, cached: cached)
-                let mergedEntries = entriesInWindow(cached.entries + parsed.entries, cutoff: cutoff)
-                let updated = CachedFile(
-                    mod: mod,
-                    size: size,
-                    fileID: fileID,
-                    lineCount: parsed.lineCount,
-                    trailingData: parsed.trailingData,
-                    entries: mergedEntries
-                )
-                stats.incrementalFiles += 1
-                stats.parsedBytes += parsed.bytesRead
-                newCache[path] = updated
-                fileEntries = mergedEntries
             } else {
-                let parsed = parseWholeFile(url, throughOffset: size)
-                let rebuilt = CachedFile(
-                    mod: mod,
-                    size: size,
-                    fileID: fileID,
-                    lineCount: parsed.lineCount,
-                    trailingData: parsed.trailingData,
-                    entries: parsed.entries
-                )
-                stats.fullParsedFiles += 1
-                stats.parsedBytes += parsed.bytesRead
-                let entries = entriesInWindow(parsed.entries, cutoff: cutoff)
-                newCache[path] = CachedFile(
-                    mod: rebuilt.mod,
-                    size: rebuilt.size,
-                    fileID: rebuilt.fileID,
-                    lineCount: rebuilt.lineCount,
-                    trailingData: rebuilt.trailingData,
-                    entries: entries
-                )
-                fileEntries = entries
+                let parsed: ParsedChunk?
+                let incremental: Bool
+                if let cached = cache[path],
+                   cached.fileID != nil,
+                   cached.fileID == fileID,
+                   size > cached.size {
+                    parsed = parseAppendedFile(url, fromOffset: cached.size, throughOffset: size, cached: cached)
+                    incremental = true
+                } else {
+                    parsed = parseWholeFile(url, throughOffset: size)
+                    incremental = false
+                }
+
+                if let parsed {
+                    let priorEntries = incremental ? (cache[path]?.entries ?? []) : []
+                    let entries = entriesInWindow(priorEntries + parsed.entries, cutoff: cutoff)
+                    newCache[path] = CachedFile(
+                        mod: mod, size: size, fileID: fileID,
+                        lineCount: parsed.lineCount,
+                        trailingData: parsed.trailingData,
+                        entries: entries
+                    )
+                    if incremental { stats.incrementalFiles += 1 }
+                    else { stats.fullParsedFiles += 1 }
+                    stats.parsedBytes += parsed.bytesRead
+                    fileEntries = entries
+                } else if let cached = cache[path] {
+                    // Keep the previous offset so a transient read failure is retried.
+                    newCache[path] = cached
+                    fileEntries = entriesInWindow(cached.entries, cutoff: cutoff)
+                } else {
+                    continue
+                }
             }
 
             for entry in fileEntries where entry.timestamp >= cutoff && seen.insert(entry.id).inserted {
@@ -697,34 +691,35 @@ final class UsageStore: ObservableObject {
     private static let maxFileBytes: Int = 64 * 1024 * 1024  // 64MB hard cap per file
     private static let maxLinesPerFile = 200_000
 
-    private func parseWholeFile(_ url: URL, throughOffset: Int) -> ParsedChunk {
+    private func parseWholeFile(_ url: URL, throughOffset: Int) -> ParsedChunk? {
         readFile(url, fromOffset: 0, throughOffset: throughOffset, carryover: Data(), lineCount: 0)
     }
 
-    private func parseAppendedFile(_ url: URL, fromOffset offset: Int, throughOffset: Int, cached: CachedFile) -> ParsedChunk {
+    private func parseAppendedFile(_ url: URL, fromOffset offset: Int, throughOffset: Int, cached: CachedFile) -> ParsedChunk? {
         readFile(url, fromOffset: offset, throughOffset: throughOffset, carryover: cached.trailingData, lineCount: cached.lineCount)
     }
 
-    private func readFile(_ url: URL, fromOffset offset: Int, throughOffset endOffset: Int, carryover: Data, lineCount initialLineCount: Int) -> ParsedChunk {
+    private func readFile(_ url: URL, fromOffset offset: Int, throughOffset endOffset: Int, carryover: Data, lineCount initialLineCount: Int) -> ParsedChunk? {
         if let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize,
            size > Self.maxFileBytes {
             return ParsedChunk(entries: [], lineCount: 0, trailingData: Data(), bytesRead: 0)
         }
 
         guard let handle = try? FileHandle(forReadingFrom: url) else {
-            return ParsedChunk(entries: [], lineCount: initialLineCount, trailingData: carryover, bytesRead: 0)
+            return nil
         }
         defer { try? handle.close() }
 
-        handle.seek(toFileOffset: UInt64(offset))
+        guard (try? handle.seek(toOffset: UInt64(offset))) != nil else { return nil }
 
         var buffer = carryover
         var entries: [UsageEntry] = []
         var lines = initialLineCount
         var bytesRead = 0
 
-        while bytesRead < endOffset - offset,
-              let chunk = try? handle.read(upToCount: min(64 * 1024, endOffset - offset - bytesRead)), !chunk.isEmpty {
+        while bytesRead < endOffset - offset {
+            guard let chunk = try? handle.read(upToCount: min(64 * 1024, endOffset - offset - bytesRead)),
+                  !chunk.isEmpty else { return nil }
             bytesRead += chunk.count
             buffer.append(chunk)
             drainCompleteLines(from: &buffer, into: &entries, lineCount: &lines)

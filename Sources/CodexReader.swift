@@ -399,13 +399,16 @@ enum CodexReader {
     private static func normalizeUsage(_ raw: Any?) -> RawUsage? {
         guard let dict = raw as? [String: Any] else { return nil }
 
-        let input = intValue(dict["input_tokens"])
-        let cached = intValue(dict["cached_input_tokens"] ?? dict["cache_read_input_tokens"])
-        let output = intValue(dict["output_tokens"])
-        let reasoning = intValue(dict["reasoning_output_tokens"])
-        let explicitTotal = intValue(dict["total_tokens"])
-        let cacheWrite = intValue(dict["cache_write_input_tokens"])
-        let total = explicitTotal > 0 ? explicitTotal : input + output
+        guard let input = intValue(dict["input_tokens"]),
+              let cached = intValue(dict["cached_input_tokens"] ?? dict["cache_read_input_tokens"]),
+              let output = intValue(dict["output_tokens"]),
+              let reasoning = intValue(dict["reasoning_output_tokens"]),
+              let explicitTotal = intValue(dict["total_tokens"]),
+              let cacheWrite = intValue(dict["cache_write_input_tokens"])
+        else { return nil }
+        let (componentTotal, overflow) = input.addingReportingOverflow(output)
+        guard !overflow else { return nil }
+        let total = explicitTotal > 0 ? explicitTotal : componentTotal
 
         if input == 0, cached == 0, output == 0, reasoning == 0, total == 0 {
             return nil
@@ -462,19 +465,23 @@ enum CodexReader {
         return trimmed.isEmpty ? nil : trimmed
     }
 
-    private static func intValue(_ value: Any?) -> Int {
+    private static func intValue(_ value: Any?) -> Int? {
+        guard let value else { return 0 }
+        let integer: Int?
         switch value {
         case let n as Int:
-            return n
+            integer = n
         case let n as Int64:
-            return Int(n)
+            integer = Int(exactly: n)
         case let n as Double:
-            return Int(n)
+            integer = Int(exactly: n)
         case let n as NSNumber:
-            return n.intValue
+            integer = Int(exactly: n.doubleValue)
         default:
-            return 0
+            return nil
         }
+        guard let integer, integer >= 0 else { return nil }
+        return integer
     }
 
     private static func parseDate(_ text: String) -> Date? {
