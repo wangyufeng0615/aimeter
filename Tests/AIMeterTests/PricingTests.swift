@@ -440,6 +440,67 @@ final class PricingTests: XCTestCase {
         ))
     }
 
+    func testMissingPricesBypassFreshCacheButHonorRetryInterval() {
+        XCTAssertTrue(Pricing.shouldRefreshPricing(
+            cacheAge: 60, secondsSinceLastAttempt: nil, hasMissingPrices: true
+        ))
+        XCTAssertFalse(Pricing.shouldRefreshPricing(
+            cacheAge: 60, secondsSinceLastAttempt: 14 * 60, hasMissingPrices: true
+        ))
+        XCTAssertTrue(Pricing.shouldRefreshPricing(
+            cacheAge: 60, secondsSinceLastAttempt: 15 * 60, hasMissingPrices: true
+        ))
+        XCTAssertFalse(Pricing.shouldRefreshPricing(
+            cacheAge: 60, secondsSinceLastAttempt: 15 * 60, hasMissingPrices: false
+        ))
+    }
+
+    func testPriceDiscoveryOnlyRetriesSupportedDirectModelsAndTiers() {
+        for request in [
+            Pricing.Request(model: "gpt-99.1-new", serviceTier: "priority"),
+            Pricing.Request(model: "openai/gpt-99.1-new", serviceTier: "flex"),
+            Pricing.Request(model: "claude-sonnet-99-1", speed: "fast"),
+            Pricing.Request(model: "sonnet-99-1")
+        ] {
+            XCTAssertTrue(Pricing.needsRateDiscovery(request), request.model)
+        }
+        for request in [
+            Pricing.Request(model: "gpt-6-sol"),
+            Pricing.Request(model: "gpt-99.1-new", serviceTier: "unverified"),
+            Pricing.Request(model: "relay/gpt-99.1-new"),
+            Pricing.Request(model: "relay/claude-sonnet-99-1"),
+            Pricing.Request(model: "<synthetic>"),
+            Pricing.Request(model: "unknown")
+        ] {
+            XCTAssertFalse(Pricing.needsRateDiscovery(request), request.model)
+        }
+    }
+
+    func testGPT61SolCanBeImportedWithoutBundledModelPrice() throws {
+        let fields = ["input_cost_per_token", "output_cost_per_token",
+                      "cache_read_input_token_cost", "cache_creation_input_token_cost"]
+        let standard = [2e-6, 10e-6, 0.1e-6, 2.5e-6]
+        let long = [4e-6, 15e-6, 0.2e-6, 5e-6]
+        var info: [String: Any] = ["litellm_provider": "openai"]
+        for (index, field) in fields.enumerated() {
+            info[field] = standard[index]
+            info["\(field)_above_272k_tokens"] = long[index]
+            info["\(field)_priority"] = standard[index] * 2
+            info["\(field)_above_272k_tokens_priority"] = long[index] * 2
+            info["\(field)_flex"] = standard[index] * 0.5
+            info["\(field)_above_272k_tokens_flex"] = long[index] * 0.5
+        }
+        let parsed = Pricing.parseLiteLLM(["gpt-6.1-sol": info])
+        let rate = try XCTUnwrap(parsed["gpt-6.1-sol"])
+        XCTAssertEqual(rate.cacheRead, 0.1e-6)
+        XCTAssertEqual(rate.longContextThreshold, 272_000)
+        XCTAssertEqual(rate.fastMultiplier, 2)
+        XCTAssertEqual(rate.flexMultiplier, 0.5)
+        XCTAssertEqual(Pricing.modelFamily("openai/gpt-6.1-sol", availableFamilies: Set(parsed.keys)),
+                       "gpt-6.1-sol")
+        XCTAssertEqual(Pricing.modelFamily("gpt-6-sol", availableFamilies: Set(parsed.keys)), "unknown")
+    }
+
     func testGPT55LongContextPricingStartsAbove272KAndAppliesToFullRequest() {
         let atThreshold = Pricing.cost(
             model: "gpt-5.5",

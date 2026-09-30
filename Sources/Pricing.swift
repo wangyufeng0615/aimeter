@@ -5,6 +5,14 @@ import Foundation
 /// applied after the remote merge so stale upstream data cannot override known
 /// rules or reprice historical usage.
 enum Pricing {
+    /// Local usage requirements; only the public price table is downloaded.
+    /// Model names and usage records are never sent to the pricing source.
+    struct Request: Hashable {
+        let model: String
+        var speed: String? = nil
+        var serviceTier: String? = nil
+    }
+
     struct Rate {
         let input: Double           // cost per token
         let output: Double
@@ -192,9 +200,10 @@ enum Pricing {
     }()
 
     /// Call from a background thread. A long-running menu app rechecks cache
-    /// freshness on every Stage 2 refresh and retries transient failures after
-    /// a bounded delay.
-    static func loadFromLiteLLM() {
+    /// freshness on every Stage 2 refresh. Missing prices bypass the cache TTL
+    /// so a newly observed model can be discovered without an app update.
+    /// Network attempts remain bounded even if the source has no price yet.
+    static func loadFromLiteLLM(for requests: Set<Request> = []) {
         refreshLock.lock()
         defer { refreshLock.unlock() }
 
@@ -208,7 +217,8 @@ enum Pricing {
         let secondsSinceLastAttempt = lastFetchAttempt.map { now.timeIntervalSince($0) }
         guard shouldRefreshPricing(
             cacheAge: cached?.age,
-            secondsSinceLastAttempt: secondsSinceLastAttempt
+            secondsSinceLastAttempt: secondsSinceLastAttempt,
+            hasMissingPrices: requests.contains(where: needsRateDiscovery)
         ) else {
             return
         }
@@ -225,11 +235,27 @@ enum Pricing {
 
     static func shouldRefreshPricing(
         cacheAge: TimeInterval?,
-        secondsSinceLastAttempt: TimeInterval?
+        secondsSinceLastAttempt: TimeInterval?,
+        hasMissingPrices: Bool = false
     ) -> Bool {
-        if let cacheAge, cacheAge >= 0, cacheAge < cacheTTL { return false }
+        if !hasMissingPrices, let cacheAge, cacheAge >= 0, cacheAge < cacheTTL { return false }
         guard let secondsSinceLastAttempt else { return true }
         return secondsSinceLastAttempt >= failedFetchRetryInterval
+    }
+
+    /// Unknown relay contracts and unsupported tiers cannot be resolved by
+    /// fetching the direct provider table, so they must not trigger retries.
+    static func needsRateDiscovery(_ request: Request) -> Bool {
+        switch request.serviceTier?.lowercased() {
+        case nil, "", "default", "standard", "auto", "priority", "fast", "flex": break
+        default: return false
+        }
+        let model = request.model.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        let openAIModel = model.hasPrefix("openai/") ? String(model.dropFirst("openai/".count)) : model
+        guard isDirectGPTModel(openAIModel)
+                || directClaudeFamily(model) != nil
+                || directClaudeFamily("claude-\(model)") != nil else { return false }
+        return !hasRate(model: request.model, speed: request.speed, serviceTier: request.serviceTier)
     }
 
     /// Merge fetched rates with defaults (so OpenAI models always have pricing)

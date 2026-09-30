@@ -22,7 +22,7 @@ It writes:
 - `<Claude root>/settings.json` — first launch or Settings only, with user consent, to add/remove a `tee` hook for rate-limit data
 - `<Claude root>/settings.json.bak-<timestamp>` — automatic backup before any edit (last 3 kept)
 - `~/Library/Caches/com.aimeter.app/claude-rate-v1-<root-hash>.json` — cached Claude rate-limit snapshot
-- `~/Library/Caches/com.aimeter.app/pricing.json` — LiteLLM pricing cache (24h TTL)
+- `~/Library/Caches/com.aimeter.app/pricing.json` — LiteLLM pricing cache (24h TTL; early refresh for missing direct-model prices, with attempts at least 15 minutes apart)
 - `~/Library/Preferences/com.aimeter.app.plist` — app preferences such as language, launch-at-login flag, and custom roots
 
 ## Network

@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.3.12] - 2026-09-30
+
+### Fixed
+- Refresh the public pricing table when local logs contain an unpriced direct model or supported processing tier, even if the 24-hour cache is still fresh. New models such as GPT-6.1 Sol no longer need a bundled model-price update.
+- Recalculate existing Claude and Codex token costs after price discovery in the same refresh, while limiting network attempts to once every 15 minutes.
+
 ## [0.3.11] - 2026-09-27
 
 ### Added

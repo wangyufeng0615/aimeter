@@ -10,7 +10,7 @@ final class UsageStore: ObservableObject {
     typealias RateReader = () -> RateLimit?
     typealias ClaudeRateSnapshotReader = () -> (rate: RateLimit?, status: ClaudeRateStatus)
     typealias CodexEntriesReader = (Date) -> [CodexReader.UsageEntry]?
-    typealias PricingLoader = () -> Void
+    typealias PricingLoader = (Set<Pricing.Request>) -> Void
 
     struct TokenLoadStats: Equatable {
         var scannedFiles = 0
@@ -418,13 +418,20 @@ final class UsageStore: ObservableObject {
         snapshot: [String: CachedFile],
         previousCodexEntries: [CodexReader.UsageEntry]
     ) -> TokenLoadResult {
-        pricingLoader()
-
         var cache = snapshot
         let claude = loadClaudeEntries(cache: &cache)
         let cutoff = now().addingTimeInterval(-7 * 86400)
         let codexEntries = codexEntriesReader(cutoff)
         let visibleCodexEntries = codexEntries ?? previousCodexEntries
+        var priceRequests = Set(claude.entries.filter { $0.costUSD == nil }.map {
+            Pricing.Request(model: $0.model, speed: $0.speed)
+        })
+        priceRequests.formUnion(visibleCodexEntries.map {
+            Pricing.Request(model: $0.model, serviceTier: $0.serviceTier)
+        })
+        // Cached entries retain their token breakdown. Refresh prices before
+        // aggregating so an unchanged log gets its cost in this same load.
+        pricingLoader(priceRequests)
         let summary = buildUsageSummary(
             ccEntries: claude.entries,
             cxEntries: visibleCodexEntries,

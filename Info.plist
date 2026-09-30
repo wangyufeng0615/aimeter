@@ -13,9 +13,9 @@
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.3.11</string>
+    <string>0.3.12</string>
     <key>CFBundleVersion</key>
-    <string>14</string>
+    <string>15</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>ITSAppUsesNonExemptEncryption</key>

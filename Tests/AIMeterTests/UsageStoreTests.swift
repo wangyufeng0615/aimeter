@@ -286,6 +286,49 @@ final class UsageStoreTests: XCTestCase {
     }
 
     @MainActor
+    func testPricingDiscoveryIncludesCachedLogsAndRetainedCodexEntries() throws {
+        let projectsDir = try makeProjectsDir()
+        let now = Date()
+        try write([
+            try usageLine(messageID: "m1", requestID: "r1", timestamp: now,
+                          model: "claude-sonnet-99-1", input: 100),
+            try usageLine(messageID: "m2", requestID: "r2", timestamp: now,
+                          model: "relay/already-billed", input: 200, costUSD: 0.5)
+        ].joined(separator: "\n") + "\n", to: projectsDir.appendingPathComponent("session.jsonl"))
+        let entry = CodexReader.UsageEntry(
+            id: "new:1", sessionID: "new", timestamp: now, model: "gpt-99.1-new",
+            inputTokens: 100, cachedInputTokens: 0, outputTokens: 10,
+            reasoningOutputTokens: 0, totalTokens: 110, serviceTier: "priority"
+        )
+        var entries: [CodexReader.UsageEntry]? = [entry]
+        var requests: [Set<Pricing.Request>] = []
+        var codexWasRead = false
+        let store = UsageStore(
+            projectsDir: projectsDir, autoload: false, autoRefresh: false,
+            now: { now }, claudeRateSnapshotReader: { (nil, .waitingForSessionData) },
+            codexRateReader: { nil },
+            codexEntriesReader: { _ in codexWasRead = true; return entries },
+            pricingLoader: {
+                XCTAssertTrue(codexWasRead)
+                requests.append($0)
+            }
+        )
+        store.refreshSynchronouslyForTesting()
+        entries = nil
+        codexWasRead = false
+        store.refreshSynchronouslyForTesting()
+
+        let expected: Set<Pricing.Request> = [
+            Pricing.Request(model: "claude-sonnet-99-1"),
+            Pricing.Request(model: "gpt-99.1-new", serviceTier: "priority")
+        ]
+        XCTAssertEqual(requests, [expected, expected])
+        XCTAssertEqual(store.lastTokenLoadStats.reusedFiles, 1)
+        XCTAssertTrue(store.usageSummary.today.hasUnknownCost)
+        XCTAssertEqual(store.usageSummary.today.cost, 0.5)
+    }
+
+    @MainActor
     func testCachedClaudeEntriesArePrunedWhenTheyAgeOut() throws {
         let projectsDir = try makeProjectsDir()
         let logFile = projectsDir.appendingPathComponent("session.jsonl")
@@ -385,7 +428,7 @@ final class UsageStoreTests: XCTestCase {
             },
             codexRateReader: { nil },
             codexEntriesReader: { _ in [] },
-            pricingLoader: {}
+            pricingLoader: { _ in }
         )
 
         store.refreshSynchronouslyForTesting()
@@ -414,7 +457,7 @@ final class UsageStoreTests: XCTestCase {
             claudeRateSnapshotReader: { snapshot },
             codexRateReader: { nil },
             codexEntriesReader: { _ in [] },
-            pricingLoader: {}
+            pricingLoader: { _ in }
         )
 
         store.refreshSynchronouslyForTesting()
@@ -482,7 +525,7 @@ final class UsageStoreTests: XCTestCase {
             claudeRateStatusReader: { .waitingForSessionData },
             codexRateReader: { expectedRate },
             codexEntriesReader: { _ in [] },
-            pricingLoader: {},
+            pricingLoader: { _ in },
             wakeNotificationCenter: wakeCenter,
             wakeNotificationName: wakeName
         )
@@ -590,7 +633,7 @@ final class UsageStoreTests: XCTestCase {
             claudeRateStatusReader: { claudeRate == nil ? .waitingForSessionData : .available },
             codexRateReader: { codexRate },
             codexEntriesReader: { _ in codexEntries },
-            pricingLoader: {}
+            pricingLoader: { _ in }
         )
     }
 

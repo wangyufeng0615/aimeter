@@ -26,7 +26,7 @@ final class DetailViewLayoutTests: XCTestCase {
         defaults.set(codex.path, forKey: AppPaths.Keys.codexRoot)
         defaults.set("en", forKey: "language")
 
-        let store = UsageStore(autoload: false, autoRefresh: false, pricingLoader: {})
+        let store = UsageStore(autoload: false, autoRefresh: false, pricingLoader: { _ in })
         store.claudeRateStatus = .rateLimitsUnavailable
         store.isLoading = false
         let renderer = ImageRenderer(content: DetailView(store: store)
