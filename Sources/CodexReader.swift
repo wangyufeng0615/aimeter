@@ -56,14 +56,15 @@ enum CodexReader {
         var sessionID: String
         var currentModel: String?
         var previousTotal: RawUsage?
-        var sequence: Int
         var serviceTier: String?
+        var hasResponseRecords: Bool
     }
 
     private struct ParsedSession {
         let entries: [UsageEntry]
         let state: ParserState
         let trailingData: Data
+        let discardingLine: Bool
     }
 
     private struct CachedSessionFile {
@@ -73,13 +74,10 @@ enum CodexReader {
         let entries: [UsageEntry]
         let state: ParserState
         let trailingData: Data
+        let discardingLine: Bool
     }
 
     private static var defaultSessionsDir: URL { AppPaths.codexSessionsDir }
-
-    /// Hard cap matching UsageStore.maxFileBytes — skip pathological session
-    /// files rather than risk OOM when accumulating the decode buffer.
-    private static let maxFileBytes: Int = 64 * 1024 * 1024
 
     private static let cacheLock = NSLock()
     private static var fileCacheBySessionsDir: [String: [String: CachedSessionFile]] = [:]
@@ -103,101 +101,106 @@ enum CodexReader {
         readEntries(since: cutoff, sessionsDir: defaultSessionsDir)
     }
 
-    static func readEntries(since cutoff: Date, sessionsDir: URL) -> [UsageEntry]? {
-        guard FileManager.default.fileExists(atPath: sessionsDir.path) else { return [] }
-
-        guard let enumerator = FileManager.default.enumerator(
-            at: sessionsDir,
-            includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey],
-            options: [.skipsHiddenFiles]
-        ) else {
-            return nil
-        }
-
-        let cacheKey = sessionsDir.standardizedFileURL.path
+    static func readEntries(since cutoff: Date, sessionsDir: URL, archivedSessionsDir: URL? = nil) -> [UsageEntry]? {
+        let archive = archivedSessionsDir ?? sessionsDir.deletingLastPathComponent()
+            .appendingPathComponent("archived_sessions", isDirectory: true)
+        let roots = [sessionsDir, archive]
+        let cacheKey = roots.map { $0.standardizedFileURL.path }.joined(separator: "\n")
         let cacheSnapshot = cachedFiles(for: cacheKey)
         var newCache: [String: CachedSessionFile] = [:]
         var results: [UsageEntry] = []
 
-        while let url = enumerator.nextObject() as? URL {
-            guard url.pathExtension == "jsonl" else { continue }
+        for root in roots where FileManager.default.fileExists(atPath: root.path) {
+            guard let enumerator = FileManager.default.enumerator(
+                at: root,
+                includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey],
+                options: [.skipsHiddenFiles]
+            ) else { return nil }
+            while let url = enumerator.nextObject() as? URL {
+                guard url.pathExtension == "jsonl" else { continue }
 
-            guard let values = try? url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey]),
-                  let mod = values.contentModificationDate,
-                  let size = values.fileSize
-            else {
-                return nil
-            }
+                guard let values = try? url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey]),
+                      let mod = values.contentModificationDate,
+                      let size = values.fileSize
+                else {
+                    return nil
+                }
 
-            if mod < cutoff {
-                continue
-            }
-            if size > maxFileBytes {
-                continue
-            }
+                if mod < cutoff {
+                    continue
+                }
+                let path = url.path
+                let fileID = fileID(for: url)
+                let cached = cacheSnapshot[path]
 
-            let path = url.path
-            let fileID = fileID(for: url)
-            let cached = cacheSnapshot[path]
+                if let cached,
+                   cached.mod == mod,
+                   cached.size == size,
+                   cached.fileID == fileID {
+                    let entries = cached.entries.filter { $0.timestamp >= cutoff }
+                    newCache[path] = CachedSessionFile(
+                        mod: cached.mod,
+                        size: cached.size,
+                        fileID: cached.fileID,
+                        entries: entries,
+                        state: cached.state,
+                        trailingData: cached.trailingData,
+                        discardingLine: cached.discardingLine
+                    )
+                    results.append(contentsOf: entries)
+                    continue
+                }
 
-            if let cached,
-               cached.mod == mod,
-               cached.size == size,
-               cached.fileID == fileID {
-                let entries = cached.entries.filter { $0.timestamp >= cutoff }
+                let parsed: ParsedSession
+                let entries: [UsageEntry]
+
+                if let cached,
+                   cached.fileID != nil,
+                   cached.fileID == fileID,
+                   size > cached.size {
+                    guard let incremental = parseSessionFile(
+                        url,
+                        cutoff: cutoff,
+                        fromOffset: cached.size,
+                        carryover: cached.trailingData,
+                        discardingLine: cached.discardingLine,
+                        initialState: cached.state,
+                        throughOffset: size
+                    ) else {
+                        return nil
+                    }
+                    parsed = incremental
+                    entries = (cached.entries + incremental.entries).filter { $0.timestamp >= cutoff }
+                } else {
+                    guard let full = parseSessionFile(url, cutoff: cutoff, throughOffset: size) else {
+                        return nil
+                    }
+                    parsed = full
+                    entries = full.entries.filter { $0.timestamp >= cutoff }
+                }
+
                 newCache[path] = CachedSessionFile(
-                    mod: cached.mod,
-                    size: cached.size,
-                    fileID: cached.fileID,
+                    mod: mod,
+                    size: size,
+                    fileID: fileID,
                     entries: entries,
-                    state: cached.state,
-                    trailingData: cached.trailingData
+                    state: parsed.state,
+                    trailingData: parsed.trailingData,
+                    discardingLine: parsed.discardingLine
                 )
                 results.append(contentsOf: entries)
-                continue
             }
 
-            let parsed: ParsedSession
-            let entries: [UsageEntry]
-
-            if let cached,
-               cached.fileID != nil,
-               cached.fileID == fileID,
-               size > cached.size {
-                guard let incremental = parseSessionFile(
-                    url,
-                    cutoff: cutoff,
-                    fromOffset: cached.size,
-                    carryover: cached.trailingData,
-                    initialState: cached.state,
-                    throughOffset: size
-                ) else {
-                    return nil
-                }
-                parsed = incremental
-                entries = (cached.entries + incremental.entries).filter { $0.timestamp >= cutoff }
-            } else {
-                guard let full = parseSessionFile(url, cutoff: cutoff, throughOffset: size) else {
-                    return nil
-                }
-                parsed = full
-                entries = full.entries.filter { $0.timestamp >= cutoff }
-            }
-
-            newCache[path] = CachedSessionFile(
-                mod: mod,
-                size: size,
-                fileID: fileID,
-                entries: entries,
-                state: parsed.state,
-                trailingData: parsed.trailingData
-            )
-            results.append(contentsOf: entries)
         }
-
         storeCachedFiles(newCache, for: cacheKey)
-
-        return results.sorted { lhs, rhs in
+        // Forked histories and files moved between active/archive directories
+        // can contain the same response. Its provider ID is stable across copies.
+        var unique: [String: UsageEntry] = [:]
+        for entry in results {
+            if let prior = unique[entry.id], prior.totalTokens >= entry.totalTokens { continue }
+            unique[entry.id] = entry
+        }
+        return unique.values.sorted { lhs, rhs in
             if lhs.timestamp == rhs.timestamp { return lhs.id < rhs.id }
             return lhs.timestamp < rhs.timestamp
         }
@@ -208,90 +211,39 @@ enum CodexReader {
         cutoff: Date,
         fromOffset offset: Int = 0,
         carryover: Data = Data(),
+        discardingLine: Bool = false,
         initialState: ParserState? = nil,
         throughOffset endOffset: Int
     ) -> ParsedSession? {
-        if let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize,
-           size > maxFileBytes {
-            return ParsedSession(
-                entries: [],
-                state: initialState ?? initialStateFor(url),
-                trailingData: Data()
-            )
-        }
-        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
-        defer { try? handle.close() }
-        handle.seek(toFileOffset: UInt64(offset))
-
-        var buffer = carryover
         var state = initialState ?? initialStateFor(url)
         var entries: [UsageEntry] = []
-
-        var remaining = max(0, endOffset - offset)
-        while remaining > 0 {
-            guard let chunk = try? handle.read(upToCount: min(64 * 1024, remaining)),
-                  !chunk.isEmpty else { return nil }
-            remaining -= chunk.count
-            buffer.append(chunk)
-            drainLines(
-                from: &buffer,
-                cutoff: cutoff,
-                state: &state,
-                into: &entries
-            )
-        }
-        if !buffer.isEmpty,
-           drainLine(String(decoding: buffer, as: UTF8.self), cutoff: cutoff, state: &state, into: &entries) {
-            buffer.removeAll(keepingCapacity: false)
-        }
-
-        return ParsedSession(entries: entries, state: state, trailingData: buffer)
+        guard let result = JSONLStreamReader.read(
+            url, fromOffset: offset, throughOffset: endOffset,
+            carryover: carryover, discardingLine: discardingLine,
+            onObject: { json in
+                _ = drainObject(json, cutoff: cutoff, state: &state, into: &entries)
+            }
+        ) else { return nil }
+        return ParsedSession(entries: entries, state: state,
+                             trailingData: result.trailingData, discardingLine: result.discardingLine)
     }
 
-    private static func drainLines(
-        from buffer: inout Data,
-        cutoff: Date,
-        state: inout ParserState,
-        into entries: inout [UsageEntry]
-    ) {
-        var nextStart = buffer.startIndex
-
-        while nextStart < buffer.endIndex,
-              let newline = buffer[nextStart...].firstIndex(of: 0x0A) {
-            let lineData = buffer[nextStart..<newline]
-            nextStart = buffer.index(after: newline)
-            _ = drainLine(
-                String(decoding: lineData, as: UTF8.self),
-                cutoff: cutoff,
-                state: &state,
-                into: &entries
-            )
-        }
-
-        if nextStart > buffer.startIndex {
-            buffer.removeSubrange(buffer.startIndex..<nextStart)
-        }
-    }
-
-    private static func drainLine(
-        _ line: String,
+    private static func drainObject(
+        _ json: [String: Any],
         cutoff: Date,
         state: inout ParserState,
         into entries: inout [UsageEntry]
     ) -> Bool {
-        guard let data = line.data(using: .utf8),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let type = json["type"] as? String
-        else { return false }
+        guard let type = json["type"] as? String else { return false }
 
         let payload = json["payload"] as? [String: Any] ?? [:]
 
-        if type == "session_meta", let id = payload["id"] as? String, !id.isEmpty {
+        if type == "session_meta", let id = nonEmptyString(payload["id"]) {
             state.sessionID = id
             return true
         }
 
-        if type == "turn_context", let model = payload["model"] as? String, !model.isEmpty {
+        if type == "turn_context", let model = nonEmptyString(payload["model"]) {
             if model != state.currentModel { state.serviceTier = nil }
             state.currentModel = model
             if payload.keys.contains("service_tier") {
@@ -310,7 +262,30 @@ enum CodexReader {
             return true
         }
 
-        guard type == "event_msg",
+        if type == "token_usage_record",
+           let responseID = nonEmptyString(payload["response_id"]),
+           let raw = normalizeUsage(payload["usage"]),
+           let timestampText = json["timestamp"] as? String,
+           let timestamp = parseDate(timestampText) {
+            // These are exact per-response deltas. The subsequent token_count
+            // is a delayed UI snapshot of the same work, and may coalesce several
+            // responses into one last_token_usage. Never add both streams.
+            state.hasResponseRecords = true
+            guard timestamp >= cutoff else { return true }
+            let owner = nonEmptyString(payload["thread_id"]) ?? state.sessionID
+            entries.append(UsageEntry(
+                id: "response:\(owner):\(responseID)", sessionID: owner,
+                timestamp: timestamp, model: state.currentModel ?? "unknown",
+                inputTokens: raw.inputTokens, cachedInputTokens: raw.cachedInputTokens,
+                outputTokens: raw.outputTokens, reasoningOutputTokens: raw.reasoningOutputTokens,
+                totalTokens: raw.totalTokens, cacheWriteInputTokens: raw.cacheWriteInputTokens,
+                serviceTier: state.serviceTier
+            ))
+            return true
+        }
+
+        guard !state.hasResponseRecords,
+              type == "event_msg",
               payload["type"] as? String == "token_count",
               let timestampText = json["timestamp"] as? String,
               let timestamp = parseDate(timestampText)
@@ -347,10 +322,9 @@ enum CodexReader {
               deltaRaw.totalTokens > 0
         else { return true }
 
-        state.sequence += 1
         entries.append(
             UsageEntry(
-                id: "\(state.sessionID):\(state.sequence)",
+                id: "legacy:\(state.sessionID):\(timestampText):\(totalRaw?.totalTokens ?? deltaRaw.totalTokens)",
                 sessionID: state.sessionID,
                 timestamp: timestamp,
                 model: model,
@@ -383,8 +357,8 @@ enum CodexReader {
             sessionID: url.deletingPathExtension().lastPathComponent,
             currentModel: nil,
             previousTotal: nil,
-            sequence: 0,
-            serviceTier: nil
+            serviceTier: nil,
+            hasResponseRecords: false
         )
     }
 
@@ -460,7 +434,7 @@ enum CodexReader {
     }
 
     private static func nonEmptyString(_ value: Any?) -> String? {
-        guard let text = value as? String else { return nil }
+        guard let text = JSONLStreamReader.detachedString(value) else { return nil }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
     }

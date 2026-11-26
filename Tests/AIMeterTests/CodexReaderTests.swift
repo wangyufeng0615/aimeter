@@ -5,6 +5,69 @@ import XCTest
 final class CodexReaderTests: XCTestCase {
     private var tempDir: URL!
 
+    func testResponseLedgerSurvivesAppendWithoutCountingDelayedLegacySnapshots() throws {
+        let sessions = try makeSessionsDir()
+        let file = sessions.appendingPathComponent("rollout-ledger.jsonl")
+        let start = Date(timeIntervalSince1970: 1_776_150_000)
+        func record(_ id: String, _ tokens: Int) throws -> String {
+            try jsonLine(["timestamp": iso(start), "type": "token_usage_record", "payload": [
+                "thread_id": "ledger-thread", "response_id": id,
+                "usage": ["input_tokens": tokens - 5, "output_tokens": 5, "total_tokens": tokens]
+            ]])
+        }
+        try write([
+            try jsonLine(["type": "turn_context", "payload": ["model": "gpt-6.1-sol"]]),
+            try record("r1", 105),
+            try record("r2", 205),
+            // The UI snapshot only retains the latest response: 105 is lost
+            // by a reader that only consumes last_token_usage here.
+            try tokenCountLine(timestamp: start, last: ["input_tokens": 200, "output_tokens": 5, "total_tokens": 205],
+                               total: ["input_tokens": 300, "output_tokens": 10, "total_tokens": 310])
+        ].joined(separator: "\n") + "\n", to: file)
+        let first = try XCTUnwrap(CodexReader.readEntries(since: start, sessionsDir: sessions))
+        XCTAssertEqual(first.reduce(0) { $0 + $1.totalTokens }, 310)
+        XCTAssertEqual(first.count, 2)
+        try append(try record("r3", 55) + "\n", to: file)
+        let second = try XCTUnwrap(CodexReader.readEntries(since: start, sessionsDir: sessions))
+        XCTAssertEqual(second.reduce(0) { $0 + $1.totalTokens }, 365)
+        XCTAssertEqual(Set(second.map(\.model)), ["gpt-6.1-sol"])
+    }
+
+    func testArchivedSessionsAndCopiedResponseHistoryAreCountedOnce() throws {
+        let sessions = try makeSessionsDir()
+        let archive = tempDir.appendingPathComponent("archived_sessions")
+        let start = Date(timeIntervalSince1970: 1_776_150_000)
+        let context = try jsonLine(["type": "turn_context", "payload": ["model": "gpt-6.1-sol"]])
+        func record(_ id: String) throws -> String {
+            try jsonLine(["timestamp": iso(start), "type": "token_usage_record", "payload": [
+                "thread_id": "original", "response_id": id, "usage": ["input_tokens": 100, "total_tokens": 100]
+            ]])
+        }
+        let active = sessions.appendingPathComponent("rollout-active.jsonl")
+        try write(context + "\n" + record("shared") + "\n", to: active)
+        try write(context + "\n" + record("shared") + "\n" + record("archived-only") + "\n",
+                  to: archive.appendingPathComponent("rollout-archived.jsonl"))
+        let entries = try XCTUnwrap(CodexReader.readEntries(since: start, sessionsDir: sessions))
+        XCTAssertEqual(entries.count, 2)
+        XCTAssertEqual(entries.reduce(0) { $0 + $1.totalTokens }, 200)
+        try FileManager.default.removeItem(at: active)
+        XCTAssertEqual(CodexReader.readEntries(since: start, sessionsDir: sessions)?.count, 2)
+    }
+
+    func testLargeCodexSessionStreamsPastOversizedLine() throws {
+        let sessions = try makeSessionsDir()
+        let file = sessions.appendingPathComponent("rollout-large.jsonl")
+        let start = Date(timeIntervalSince1970: 1_776_150_000)
+        try write("", to: file)
+        let handle = try FileHandle(forWritingTo: file)
+        try handle.truncate(atOffset: 65 * 1024 * 1024)
+        try handle.close()
+        try append("\n" + jsonLine(["type": "turn_context", "payload": ["model": "gpt-6.1-sol"]]) + "\n" +
+                   tokenCountLine(timestamp: start, total: ["input_tokens": 100, "total_tokens": 100]) + "\n", to: file)
+        let entries = try XCTUnwrap(CodexReader.readEntries(since: start, sessionsDir: sessions))
+        XCTAssertEqual(entries.map(\.totalTokens), [100])
+    }
+
     override func setUpWithError() throws {
         tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)

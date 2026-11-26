@@ -7,7 +7,7 @@ final class DetailViewLayoutTests: XCTestCase {
     @MainActor
     func testEmptyRateCardsRenderWithAlignedHeaders() throws {
         let defaults = UserDefaults.standard
-        let keys = [AppPaths.Keys.claudeRoot, AppPaths.Keys.codexRoot, "language"]
+        let keys = [AppPaths.Keys.claudeRoot, AppPaths.Keys.codexRoot, AppPaths.Keys.geminiRoot, "language"]
         let previous = Dictionary(uniqueKeysWithValues: keys.map { ($0, defaults.object(forKey: $0)) })
         let fixture = FileManager.default.temporaryDirectory
             .appendingPathComponent("aimeter-layout-\(UUID().uuidString)", isDirectory: true)
@@ -24,9 +24,12 @@ final class DetailViewLayoutTests: XCTestCase {
         }
         defaults.set(claude.path, forKey: AppPaths.Keys.claudeRoot)
         defaults.set(codex.path, forKey: AppPaths.Keys.codexRoot)
+        defaults.set(fixture.appendingPathComponent("gemini").path, forKey: AppPaths.Keys.geminiRoot)
         defaults.set("en", forKey: "language")
 
-        let store = UsageStore(autoload: false, autoRefresh: false, pricingLoader: { _ in })
+        let store = UsageStore(autoload: false, autoRefresh: false,
+                               geminiEntriesReader: { _ in [] }, antigravityQuotaReader: { nil },
+                               pricingLoader: { _ in })
         store.claudeRateStatus = .rateLimitsUnavailable
         store.isLoading = false
         let renderer = ImageRenderer(content: DetailView(store: store)

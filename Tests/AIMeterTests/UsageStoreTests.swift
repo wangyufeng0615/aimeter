@@ -6,6 +6,46 @@ import XCTest
 final class UsageStoreTests: XCTestCase {
     private var tempDir: URL!
 
+    @MainActor
+    func testStreamingUsageRevisionReplacesEarlierMessageAfterAppend() throws {
+        let projects = try makeProjectsDir()
+        let file = projects.appendingPathComponent("stream.jsonl")
+        let now = Date(timeIntervalSince1970: 1_776_150_000)
+        try write(try usageLine(messageID: "m", requestID: "r", timestamp: now, input: 100, output: 8) + "\n", to: file)
+        let store = makeStore(projectsDir: projects, now: now)
+        store.refreshSynchronouslyForTesting()
+        XCTAssertEqual(store.ccEntries.first?.totalTokens, 108)
+        try append(try usageLine(messageID: "m", requestID: "r", timestamp: now, input: 100, output: 235) + "\n", to: file)
+        store.refreshSynchronouslyForTesting()
+        XCTAssertEqual(store.ccEntries.count, 1)
+        XCTAssertEqual(store.ccEntries.first?.totalTokens, 335)
+        // A fork/copy with an older partial observation must not replace it.
+        try write(try usageLine(messageID: "m", requestID: "r", timestamp: now, input: 100, output: 5) + "\n",
+                  to: projects.appendingPathComponent("copy.jsonl"))
+        store.refreshSynchronouslyForTesting()
+        XCTAssertEqual(store.usageSummary.today.tokens, 335)
+    }
+
+    @MainActor
+    func testLargeClaudeFileAndMoreThan200000LinesStillCountUsage() throws {
+        let projects = try makeProjectsDir()
+        let file = projects.appendingPathComponent("long-session.jsonl")
+        let now = Date(timeIntervalSince1970: 1_776_150_000)
+        try write("", to: file)
+        let handle = try FileHandle(forWritingTo: file)
+        try handle.truncate(atOffset: 65 * 1024 * 1024)
+        try handle.close()
+        try append("\n" + String(repeating: "{}\n", count: 200_001) +
+                   usageLine(messageID: "tail", requestID: "r", timestamp: now, input: 123) + "\n", to: file)
+        let store = makeStore(projectsDir: projects, now: now)
+        store.refreshSynchronouslyForTesting()
+        XCTAssertEqual(store.ccEntries.map(\.totalTokens), [128])
+        try append(try usageLine(messageID: "append", requestID: "r2", timestamp: now, input: 10) + "\n", to: file)
+        store.refreshSynchronouslyForTesting()
+        XCTAssertEqual(store.ccEntries.reduce(0) { $0 + $1.totalTokens }, 143)
+        XCTAssertEqual(store.lastTokenLoadStats.incrementalFiles, 1)
+    }
+
     override func setUpWithError() throws {
         tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -349,6 +389,8 @@ final class UsageStoreTests: XCTestCase {
             now: { now }, claudeRateSnapshotReader: { (nil, .waitingForSessionData) },
             codexRateReader: { nil },
             codexEntriesReader: { _ in codexWasRead = true; return entries },
+            geminiEntriesReader: { _ in [] },
+            antigravityQuotaReader: { nil },
             pricingLoader: {
                 XCTAssertTrue(codexWasRead)
                 requests.append($0)
@@ -469,6 +511,8 @@ final class UsageStoreTests: XCTestCase {
             },
             codexRateReader: { nil },
             codexEntriesReader: { _ in [] },
+            geminiEntriesReader: { _ in [] },
+            antigravityQuotaReader: { nil },
             pricingLoader: { _ in }
         )
 
@@ -498,6 +542,8 @@ final class UsageStoreTests: XCTestCase {
             claudeRateSnapshotReader: { snapshot },
             codexRateReader: { nil },
             codexEntriesReader: { _ in [] },
+            geminiEntriesReader: { _ in [] },
+            antigravityQuotaReader: { nil },
             pricingLoader: { _ in }
         )
 
@@ -566,6 +612,8 @@ final class UsageStoreTests: XCTestCase {
             claudeRateStatusReader: { .waitingForSessionData },
             codexRateReader: { expectedRate },
             codexEntriesReader: { _ in [] },
+            geminiEntriesReader: { _ in [] },
+            antigravityQuotaReader: { nil },
             pricingLoader: { _ in },
             wakeNotificationCenter: wakeCenter,
             wakeNotificationName: wakeName
@@ -674,6 +722,8 @@ final class UsageStoreTests: XCTestCase {
             claudeRateStatusReader: { claudeRate == nil ? .waitingForSessionData : .available },
             codexRateReader: { codexRate },
             codexEntriesReader: { _ in codexEntries },
+            geminiEntriesReader: { _ in [] },
+            antigravityQuotaReader: { nil },
             pricingLoader: { _ in }
         )
     }

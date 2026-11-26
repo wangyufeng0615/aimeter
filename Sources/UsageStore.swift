@@ -10,6 +10,8 @@ final class UsageStore: ObservableObject {
     typealias RateReader = () -> RateLimit?
     typealias ClaudeRateSnapshotReader = () -> (rate: RateLimit?, status: ClaudeRateStatus)
     typealias CodexEntriesReader = (Date) -> [CodexReader.UsageEntry]?
+    typealias GeminiEntriesReader = (Date) -> [UsageEntry]
+    typealias AntigravityQuotaReading = () -> AntigravityQuota?
     typealias PricingLoader = (Set<Pricing.Request>) -> Void
 
     struct TokenLoadStats: Equatable {
@@ -33,14 +35,14 @@ final class UsageStore: ObservableObject {
         let mod: Date
         let size: Int
         let fileID: UInt64?
-        let lineCount: Int
+        let discardingLine: Bool
         let trailingData: Data
         let entries: [UsageEntry]
     }
 
     private struct ParsedChunk {
         let entries: [UsageEntry]
-        let lineCount: Int
+        let discardingLine: Bool
         let trailingData: Data
         let bytesRead: Int
     }
@@ -57,6 +59,8 @@ final class UsageStore: ObservableObject {
         let ccSignature: CollectionSignature
         let cxEntries: [CodexReader.UsageEntry]?
         let cxSignature: CollectionSignature?
+        let gmEntries: [UsageEntry]
+        let gmSignature: CollectionSignature
         let usageSummary: UsageSummary
         let cache: [String: CachedFile]
         let stats: TokenLoadStats
@@ -66,20 +70,25 @@ final class UsageStore: ObservableObject {
     @Published var claudeRate: RateLimit?
     @Published var codexRate: RateLimit?
     @Published var claudeRateStatus: ClaudeRateStatus = .waitingForSessionData
+    @Published var antigravityQuota: AntigravityQuota?
 
     // Local token data for detail views
     @Published var ccEntries: [UsageEntry] = []
     @Published var cxEntries: [CodexReader.UsageEntry] = []
+    @Published var gmEntries: [UsageEntry] = []
     @Published private(set) var usageSummary: UsageSummary = .empty
     @Published var isLoading = true
 
     private var timer: Timer?
     private var rateTimer: Timer?
+    private var quotaTimer: Timer?
     private let claudeProjectsDirProvider: () -> URL
     private let now: Clock
     private let claudeRateSnapshotReader: ClaudeRateSnapshotReader
     private let codexRateReader: RateReader
     private let codexEntriesReader: CodexEntriesReader
+    private let geminiEntriesReader: GeminiEntriesReader
+    private let antigravityQuotaReader: AntigravityQuotaReading
     private let pricingLoader: PricingLoader
     private var defaultsObserver: NSObjectProtocol?
     private let wakeNotificationCenter: NotificationCenter
@@ -93,10 +102,13 @@ final class UsageStore: ObservableObject {
     private var fileCache: [String: CachedFile] = [:]
     private var stage1InFlight = false
     private var stage2InFlight = false
+    private var quotaInFlight = false
     private var ccSignature = CollectionSignature.empty
     private var cxSignature = CollectionSignature.empty
+    private var gmSignature = CollectionSignature.empty
     private var observedClaudeRoot = AppPaths.claudeRoot
     private var observedCodexRoot = AppPaths.codexRoot
+    private var observedGeminiRoot = AppPaths.geminiRoot
     private var loadGeneration = 0
 
     private(set) var lastTokenLoadStats: TokenLoadStats = .zero
@@ -118,12 +130,15 @@ final class UsageStore: ObservableObject {
         autoRefresh: Bool = true,
         refreshInterval: TimeInterval = 15,
         rateRefreshInterval: TimeInterval = 5,
+        quotaRefreshInterval: TimeInterval = 60,
         now: @escaping Clock = Date.init,
         claudeRateReader: RateReader? = nil,
         claudeRateStatusReader: (() -> ClaudeRateStatus)? = nil,
         claudeRateSnapshotReader: @escaping ClaudeRateSnapshotReader = { ClaudeRateReader.inspect() },
         codexRateReader: @escaping RateReader = CodexRateReader.read,
         codexEntriesReader: @escaping CodexEntriesReader = CodexReader.readEntries,
+        geminiEntriesReader: @escaping GeminiEntriesReader = GeminiReader.shared.readEntries(cutoff:),
+        antigravityQuotaReader: @escaping AntigravityQuotaReading = AntigravityQuotaReader.read,
         pricingLoader: @escaping PricingLoader = Pricing.loadFromLiteLLM,
         wakeNotificationCenter: NotificationCenter = NSWorkspace.shared.notificationCenter,
         wakeNotificationName: Notification.Name = NSWorkspace.didWakeNotification
@@ -140,6 +155,8 @@ final class UsageStore: ObservableObject {
         }
         self.codexRateReader = codexRateReader
         self.codexEntriesReader = codexEntriesReader
+        self.geminiEntriesReader = geminiEntriesReader
+        self.antigravityQuotaReader = antigravityQuotaReader
         self.pricingLoader = pricingLoader
         self.wakeNotificationCenter = wakeNotificationCenter
         self.defaultsObserver = NotificationCenter.default.addObserver(
@@ -157,11 +174,13 @@ final class UsageStore: ObservableObject {
             // Repeating timers do not provide a useful freshness guarantee
             // across system sleep. Refresh as soon as macOS reports a wake.
             self?.loadAsync()
+            self?.loadQuotaAsync()
         }
-        self.usageSummary = buildUsageSummary(ccEntries: [], cxEntries: [], now: now())
+        self.usageSummary = buildUsageSummary(ccEntries: [], cxEntries: [], gmEntries: [], now: now())
 
         if autoload {
             loadAsync()
+            loadQuotaAsync()
         }
         if autoRefresh {
             timer = Timer.scheduledTimer(withTimeInterval: refreshInterval, repeats: true) { [weak self] _ in
@@ -175,12 +194,19 @@ final class UsageStore: ObservableObject {
                 self?.loadRateLimitsAsync()
             }
             rateTimer?.tolerance = rateRefreshInterval * 0.1
+            // Antigravity quota is a loopback RPC to its language server, so it
+            // runs on its own slower timer and never delays Claude/Codex limits.
+            quotaTimer = Timer.scheduledTimer(withTimeInterval: quotaRefreshInterval, repeats: true) { [weak self] _ in
+                self?.loadQuotaAsync()
+            }
+            quotaTimer?.tolerance = quotaRefreshInterval * 0.1
         }
     }
 
     deinit {
         timer?.invalidate()
         rateTimer?.invalidate()
+        quotaTimer?.invalidate()
         if let defaultsObserver {
             NotificationCenter.default.removeObserver(defaultsObserver)
         }
@@ -205,6 +231,10 @@ final class UsageStore: ObservableObject {
 
     static var codexInstalled: Bool {
         FileManager.default.fileExists(atPath: AppPaths.codexRoot.path)
+    }
+
+    static var antigravityInstalled: Bool {
+        AppPaths.antigravityRoots.contains { FileManager.default.fileExists(atPath: $0.path) }
     }
 
     // MARK: - Menu bar
@@ -287,6 +317,7 @@ final class UsageStore: ObservableObject {
     enum UsageSource: String, Equatable, Hashable {
         case claude
         case codex
+        case gemini
     }
 
     struct ModelBreakdown: Identifiable, Equatable, Hashable {
@@ -331,6 +362,7 @@ final class UsageStore: ObservableObject {
         applyRateLimits(claude: rates.claude, claudeStatus: rates.claudeStatus, codex: rates.codex)
         let result = loadTokenData(snapshot: fileCache, previousCodexEntries: cxEntries)
         applyTokenData(result)
+        applyQuota(antigravityQuotaReader())
     }
 
     private func loadAsync() {
@@ -378,6 +410,31 @@ final class UsageStore: ObservableObject {
         }
     }
 
+    private func loadQuotaAsync() {
+        guard !quotaInFlight else { return }
+        quotaInFlight = true
+        let generation = loadGeneration
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self else { return }
+            let quota = self.antigravityQuotaReader()
+            DispatchQueue.main.async {
+                self.quotaInFlight = false
+                guard generation == self.loadGeneration else {
+                    self.loadQuotaAsync()
+                    return
+                }
+                self.applyQuota(quota)
+            }
+        }
+    }
+
+    /// The language server only runs while Antigravity is open. Keep the last
+    /// snapshot (shown with its time) instead of blanking the card on quit.
+    private func applyQuota(_ quota: AntigravityQuota?) {
+        guard let quota, quota != antigravityQuota else { return }
+        antigravityQuota = quota
+    }
+
     private func loadRateLimits() -> (claude: RateLimit?, claudeStatus: ClaudeRateStatus, codex: RateLimit?) {
         let claude = claudeRateSnapshotReader()
         return (claude.rate, claude.status, codexRateReader())
@@ -386,22 +443,29 @@ final class UsageStore: ObservableObject {
     private func reloadIfPathsChanged() {
         let claudeRoot = AppPaths.claudeRoot
         let codexRoot = AppPaths.codexRoot
-        guard claudeRoot != observedClaudeRoot || codexRoot != observedCodexRoot else { return }
+        let geminiRoot = AppPaths.geminiRoot
+        guard claudeRoot != observedClaudeRoot || codexRoot != observedCodexRoot
+                || geminiRoot != observedGeminiRoot else { return }
 
         loadGeneration += 1
         observedClaudeRoot = claudeRoot
         observedCodexRoot = codexRoot
+        observedGeminiRoot = geminiRoot
         fileCache = [:]
         ccSignature = .empty
         cxSignature = .empty
+        gmSignature = .empty
         claudeRate = nil
         codexRate = nil
+        antigravityQuota = nil
         claudeRateStatus = .waitingForSessionData
         ccEntries = []
         cxEntries = []
-        usageSummary = buildUsageSummary(ccEntries: [], cxEntries: [], now: now())
+        gmEntries = []
+        usageSummary = buildUsageSummary(ccEntries: [], cxEntries: [], gmEntries: [], now: now())
         isLoading = true
         loadAsync()
+        loadQuotaAsync()
     }
 
     private func applyRateLimits(claude: RateLimit?, claudeStatus: ClaudeRateStatus, codex: RateLimit?) {
@@ -423,18 +487,21 @@ final class UsageStore: ObservableObject {
         let cutoff = now().addingTimeInterval(-7 * 86400)
         let codexEntries = codexEntriesReader(cutoff)
         let visibleCodexEntries = codexEntries ?? previousCodexEntries
+        let geminiEntries = geminiEntriesReader(cutoff)
         var priceRequests = Set(claude.entries.filter { $0.costUSD == nil }.map {
             Pricing.Request(model: $0.model, speed: $0.speed)
         })
         priceRequests.formUnion(visibleCodexEntries.map {
             Pricing.Request(model: $0.model, serviceTier: $0.serviceTier)
         })
+        priceRequests.formUnion(geminiEntries.map { Pricing.Request(model: $0.model) })
         // Cached entries retain their token breakdown. Refresh prices before
         // aggregating so an unchanged log gets its cost in this same load.
         pricingLoader(priceRequests)
         let summary = buildUsageSummary(
             ccEntries: claude.entries,
             cxEntries: visibleCodexEntries,
+            gmEntries: geminiEntries,
             now: now()
         )
 
@@ -443,6 +510,8 @@ final class UsageStore: ObservableObject {
             ccSignature: claude.signature,
             cxEntries: codexEntries,
             cxSignature: codexEntries.map(collectionSignature),
+            gmEntries: geminiEntries,
+            gmSignature: collectionSignature(geminiEntries),
             usageSummary: summary,
             cache: cache,
             stats: claude.stats
@@ -463,6 +532,10 @@ final class UsageStore: ObservableObject {
             self.cxEntries = cxEntries
             self.cxSignature = cxSignature
         }
+        if result.gmSignature != gmSignature {
+            gmEntries = result.gmEntries
+            gmSignature = result.gmSignature
+        }
         if result.usageSummary != usageSummary {
             usageSummary = result.usageSummary
         }
@@ -474,6 +547,7 @@ final class UsageStore: ObservableObject {
     private func buildUsageSummary(
         ccEntries: [UsageEntry],
         cxEntries: [CodexReader.UsageEntry],
+        gmEntries: [UsageEntry],
         now: Date
     ) -> UsageSummary {
         let cal = Calendar.current
@@ -488,6 +562,7 @@ final class UsageStore: ObservableObject {
         var weeklyHasUnknownCost = Array(repeating: false, count: 7)
         var claudeModels: [String: (tokens: Int, cost: Double, hasUnknownCost: Bool)] = [:]
         var codexModels: [String: (tokens: Int, cost: Double, hasUnknownCost: Bool)] = [:]
+        var geminiModels: [String: (tokens: Int, cost: Double, hasUnknownCost: Bool)] = [:]
         var todayMessageCount = 0
 
         func weekIndex(for date: Date) -> Int? {
@@ -535,6 +610,22 @@ final class UsageStore: ObservableObject {
             )
         }
 
+        for entry in gmEntries {
+            if let index = weekIndex(for: entry.timestamp) {
+                weeklyTokens[index] += entry.totalTokens
+                weeklyCosts[index] += entry.cost
+                if !entry.hasKnownCost { weeklyHasUnknownCost[index] = true }
+            }
+
+            guard entry.timestamp >= today else { continue }
+            let current = geminiModels[entry.model] ?? (tokens: 0, cost: 0, hasUnknownCost: false)
+            geminiModels[entry.model] = (
+                tokens: current.tokens + entry.totalTokens,
+                cost: current.cost + entry.cost,
+                hasUnknownCost: current.hasUnknownCost || !entry.hasKnownCost
+            )
+        }
+
         var models = claudeModels.map {
             ModelBreakdown(
                 source: .claude,
@@ -549,6 +640,16 @@ final class UsageStore: ObservableObject {
             ModelBreakdown(
                 source: .codex,
                 displayName: $0.key,
+                fullName: $0.key,
+                tokens: $0.value.tokens,
+                cost: $0.value.cost,
+                hasUnknownCost: $0.value.hasUnknownCost
+            )
+        }
+        models += geminiModels.map {
+            ModelBreakdown(
+                source: .gemini,
+                displayName: GeminiReader.displayName($0.key),
                 fullName: $0.key,
                 tokens: $0.value.tokens,
                 cost: $0.value.cost,
@@ -591,8 +692,7 @@ final class UsageStore: ObservableObject {
 
     private func loadClaudeEntries(cache: inout [String: CachedFile]) -> ClaudeLoadResult {
         let cutoff = now().addingTimeInterval(-7 * 86400)
-        var all: [UsageEntry] = []
-        var seen = Set<String>()
+        var byID: [String: UsageEntry] = [:]
         var newCache: [String: CachedFile] = [:]
         var stats = TokenLoadStats.zero
         let projectsDir = claudeProjectsDirProvider()
@@ -628,7 +728,7 @@ final class UsageStore: ObservableObject {
                         mod: cached.mod,
                         size: cached.size,
                         fileID: cached.fileID,
-                        lineCount: cached.lineCount,
+                        discardingLine: cached.discardingLine,
                         trailingData: cached.trailingData,
                         entries: cachedEntries
                     )
@@ -654,7 +754,7 @@ final class UsageStore: ObservableObject {
                     let entries = entriesInWindow(priorEntries + parsed.entries, cutoff: cutoff)
                     newCache[path] = CachedFile(
                         mod: mod, size: size, fileID: fileID,
-                        lineCount: parsed.lineCount,
+                        discardingLine: parsed.discardingLine,
                         trailingData: parsed.trailingData,
                         entries: entries
                     )
@@ -671,13 +771,17 @@ final class UsageStore: ObservableObject {
                 }
             }
 
-            for entry in fileEntries where entry.timestamp >= cutoff && seen.insert(entry.id).inserted {
-                all.append(entry)
+            for entry in fileEntries where entry.timestamp >= cutoff {
+                // Streaming assistant records can revise output usage for the
+                // same message/request. Keep the fullest observation, including
+                // updates appended after this file was first cached.
+                if let prior = byID[entry.id], prior.totalTokens >= entry.totalTokens { continue }
+                byID[entry.id] = entry
             }
         }
 
         cache = newCache
-        let sorted = all.sorted { $0.timestamp < $1.timestamp }
+        let sorted = byID.values.sorted { $0.timestamp < $1.timestamp }
         return ClaudeLoadResult(entries: sorted,
                                 signature: collectionSignature(sorted),
                                 cache: newCache,
@@ -688,94 +792,40 @@ final class UsageStore: ObservableObject {
         entries.filter { $0.timestamp >= cutoff }
     }
 
-    private static let maxFileBytes: Int = 64 * 1024 * 1024  // 64MB hard cap per file
-    private static let maxLinesPerFile = 200_000
+    private static let usageMarker = Data(#""input_tokens""#.utf8)
 
     private func parseWholeFile(_ url: URL, throughOffset: Int) -> ParsedChunk? {
-        readFile(url, fromOffset: 0, throughOffset: throughOffset, carryover: Data(), lineCount: 0)
+        readFile(url, fromOffset: 0, throughOffset: throughOffset, carryover: Data(), discardingLine: false)
     }
 
     private func parseAppendedFile(_ url: URL, fromOffset offset: Int, throughOffset: Int, cached: CachedFile) -> ParsedChunk? {
-        readFile(url, fromOffset: offset, throughOffset: throughOffset, carryover: cached.trailingData, lineCount: cached.lineCount)
+        readFile(url, fromOffset: offset, throughOffset: throughOffset,
+                 carryover: cached.trailingData, discardingLine: cached.discardingLine)
     }
 
-    private func readFile(_ url: URL, fromOffset offset: Int, throughOffset endOffset: Int, carryover: Data, lineCount initialLineCount: Int) -> ParsedChunk? {
-        if let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize,
-           size > Self.maxFileBytes {
-            return ParsedChunk(entries: [], lineCount: 0, trailingData: Data(), bytesRead: 0)
-        }
-
-        guard let handle = try? FileHandle(forReadingFrom: url) else {
-            return nil
-        }
-        defer { try? handle.close() }
-
-        guard (try? handle.seek(toOffset: UInt64(offset))) != nil else { return nil }
-
-        var buffer = carryover
+    private func readFile(_ url: URL, fromOffset offset: Int, throughOffset endOffset: Int,
+                          carryover: Data, discardingLine: Bool) -> ParsedChunk? {
         var entries: [UsageEntry] = []
-        var lines = initialLineCount
-        var bytesRead = 0
-
-        while bytesRead < endOffset - offset {
-            guard let chunk = try? handle.read(upToCount: min(64 * 1024, endOffset - offset - bytesRead)),
-                  !chunk.isEmpty else { return nil }
-            bytesRead += chunk.count
-            buffer.append(chunk)
-            drainCompleteLines(from: &buffer, into: &entries, lineCount: &lines)
-            if lines >= Self.maxLinesPerFile {
-                buffer.removeAll(keepingCapacity: false)
-                break
+        guard let result = JSONLStreamReader.read(
+            url, fromOffset: offset, throughOffset: endOffset,
+            carryover: carryover, discardingLine: discardingLine,
+            requiredMarker: Self.usageMarker,
+            onObject: { json in
+                if let entry = self.parseObject(json) { entries.append(entry) }
             }
-        }
-        if !buffer.isEmpty,
-           lines < Self.maxLinesPerFile,
-           let entry = parseLine(String(decoding: buffer, as: UTF8.self)) {
-            entries.append(entry)
-            lines += 1
-            buffer.removeAll(keepingCapacity: false)
-        }
-
-        return ParsedChunk(entries: entries,
-                           lineCount: lines,
-                           trailingData: buffer,
-                           bytesRead: bytesRead)
-    }
-
-    private func drainCompleteLines(from buffer: inout Data, into entries: inout [UsageEntry], lineCount: inout Int) {
-        var nextStart = buffer.startIndex
-
-        while nextStart < buffer.endIndex,
-              let newline = buffer[nextStart...].firstIndex(of: 0x0A),
-              lineCount < Self.maxLinesPerFile {
-            let lineData = buffer[nextStart..<newline]
-            lineCount += 1
-            nextStart = buffer.index(after: newline)
-
-            let text = String(decoding: lineData, as: UTF8.self)
-            guard text.contains("\"input_tokens\"") else { continue }
-            if let entry = parseLine(text) {
-                entries.append(entry)
-            }
-        }
-
-        if nextStart > buffer.startIndex {
-            buffer.removeSubrange(buffer.startIndex..<nextStart)
-        }
+        ) else { return nil }
+        return ParsedChunk(entries: entries, discardingLine: result.discardingLine,
+                           trailingData: result.trailingData, bytesRead: result.bytesRead)
     }
 
     private func fileID(for url: URL) -> UInt64? {
         guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
-              let raw = attrs[.systemFileNumber] as? NSNumber else {
-            return nil
-        }
+              let raw = attrs[.systemFileNumber] as? NSNumber else { return nil }
         return raw.uint64Value
     }
 
-    private func parseLine(_ line: String) -> UsageEntry? {
-        guard let data = line.data(using: .utf8),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let type = json["type"] as? String, type == "assistant",
+    private func parseObject(_ json: [String: Any]) -> UsageEntry? {
+        guard let type = json["type"] as? String, type == "assistant",
               let msg = json["message"] as? [String: Any],
               let usage = msg["usage"] as? [String: Any],
               let ts = json["timestamp"] as? String,
@@ -797,14 +847,14 @@ final class UsageStore: ObservableObject {
 
         return UsageEntry(
             id: "\(msgId):\(reqId)", timestamp: date,
-            model: msg["model"] as? String ?? "unknown",
+            model: JSONLStreamReader.detachedString(msg["model"]) ?? "unknown",
             inputTokens: usage["input_tokens"] as? Int ?? 0,
             outputTokens: usage["output_tokens"] as? Int ?? 0,
             cacheCreationTokens: normalizedCacheCreationTotal,
             cacheCreation1hTokens: min(cacheCreation1h, normalizedCacheCreationTotal),
             cacheReadTokens: usage["cache_read_input_tokens"] as? Int ?? 0,
-            speed: usage["speed"] as? String,
-            inferenceGeo: usage["inference_geo"] as? String,
+            speed: JSONLStreamReader.detachedString(usage["speed"]),
+            inferenceGeo: JSONLStreamReader.detachedString(usage["inference_geo"]),
             costUSD: costUSD)
     }
 

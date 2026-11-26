@@ -1,20 +1,23 @@
 import Foundation
 
-/// Single source of truth for configurable Claude/Codex roots and all paths
+/// Single source of truth for configurable Claude/Codex/Gemini roots and all paths
 /// derived from them. Callers should not rebuild these paths independently.
 enum AppPaths {
     enum Keys {
         static let claudeRoot = "claudeRootPath"
         static let codexRoot = "codexRootPath"
+        static let geminiRoot = "geminiRootPath"
     }
 
     private static let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL
 
     static let defaultClaudeRoot = home.appendingPathComponent(".claude", isDirectory: true)
     static let defaultCodexRoot = home.appendingPathComponent(".codex", isDirectory: true)
+    static let defaultGeminiRoot = home.appendingPathComponent(".gemini", isDirectory: true)
 
     static let defaultClaudeRootPath = displayPath(defaultClaudeRoot)
     static let defaultCodexRootPath = displayPath(defaultCodexRoot)
+    static let defaultGeminiRootPath = displayPath(defaultGeminiRoot)
 
     static var claudeRoot: URL {
         rootURL(forKey: Keys.claudeRoot, defaultURL: defaultClaudeRoot)
@@ -22,6 +25,30 @@ enum AppPaths {
 
     static var codexRoot: URL {
         rootURL(forKey: Keys.codexRoot, defaultURL: defaultCodexRoot)
+    }
+
+    static var geminiRoot: URL {
+        rootURL(forKey: Keys.geminiRoot, defaultURL: defaultGeminiRoot)
+    }
+
+    /// Antigravity IDE and Antigravity CLI keep separate state directories
+    /// under the Gemini root with the same conversation/daemon layout.
+    static var antigravityRoots: [URL] {
+        ["antigravity", "antigravity-cli"].map {
+            geminiRoot.appendingPathComponent($0, isDirectory: true)
+        }
+    }
+
+    static var antigravityConversationDirs: [URL] {
+        antigravityRoots.map { $0.appendingPathComponent("conversations", isDirectory: true) }
+    }
+
+    static var antigravityDaemonDirs: [URL] {
+        antigravityRoots.map { $0.appendingPathComponent("daemon", isDirectory: true) }
+    }
+
+    static var geminiCLITmpDir: URL {
+        geminiRoot.appendingPathComponent("tmp", isDirectory: true)
     }
 
     static var claudeProjectsDir: URL {

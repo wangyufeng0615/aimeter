@@ -114,6 +114,9 @@ struct DetailView: View {
             if UsageStore.codexInstalled {
                 rateCard(name: "Codex", rate: store.codexRate, emptyMessage: S.codexRateWaiting)
             }
+            if UsageStore.antigravityInstalled {
+                quotaCard(name: "Antigravity", quota: store.antigravityQuota)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -214,6 +217,70 @@ struct DetailView: View {
         }
     }
 
+    /// Antigravity reports quota per shared model bucket without a fixed
+    /// window length, so each bucket is labelled by its model families and
+    /// always shows its own reset time.
+    private func quotaCard(name: String, quota: AntigravityQuota?) -> some View {
+        let labelWidth: CGFloat = 64
+        let valueWidth: CGFloat = 46
+
+        return VStack(alignment: .leading, spacing: 0) {
+            Text(name).font(Font2.header)
+                .padding(.bottom, 2)
+
+            if let quota, !visiblePools(quota).isEmpty {
+                ForEach(Array(visiblePools(quota).enumerated()), id: \.element.id) { index, pool in
+                    let primary = index == 0
+                    if !primary { Spacer().frame(height: 2) }
+                    HStack(alignment: .center, spacing: 8) {
+                        Text(pool.name)
+                            .font(Font2.badge)
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                            .frame(width: labelWidth, alignment: .leading)
+                            .help(pool.name)
+
+                        UsageBar(value: pool.usedPct, color: pctColor(pool.usedPct),
+                                 height: primary ? 9 : 5, fillOpacity: primary ? 0.9 : 0.85)
+
+                        percentageText(pool.usedPct, color: pctColor(pool.usedPct),
+                                       numberSize: primary ? 14 : 11, unitSize: primary ? 8 : 7)
+                            .frame(width: valueWidth, alignment: .trailing)
+                    }
+                    // A full bucket reports "now + window" as its reset time,
+                    // which only slides forward; it carries no information.
+                    if pool.usedPct > 0, let r = pool.resetsAt, let m = resetMinutesRemaining(until: r) {
+                        resetText(m, indent: labelWidth + 8)
+                    }
+                }
+                // A live language server refreshes every minute; only call out
+                // the time once Antigravity has closed and the values are aging.
+                if Date().timeIntervalSince(quota.updatedAt) > 180 {
+                    Text(S.snapshotTime(quota.updatedAt))
+                        .font(Font2.meta)
+                        .foregroundColor(.secondary)
+                        .padding(.top, 3)
+                }
+            } else {
+                Text(S.antigravityQuotaWaiting)
+                    .font(Font2.meta)
+                    .foregroundColor(.secondary)
+                    .opacity(0.6)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 5)
+            }
+        }
+    }
+
+    /// After Antigravity quits the snapshot ages; a bucket whose reset time
+    /// has passed no longer has a knowable value, so it is not shown.
+    private func visiblePools(_ quota: AntigravityQuota) -> [QuotaPool] {
+        let now = Date()
+        guard now.timeIntervalSince(quota.updatedAt) > 180 else { return quota.pools }
+        return quota.pools.filter { pool in pool.resetsAt.map { $0 > now } ?? false }
+    }
+
     /// Formatted percentage text: big number + small unit, both tinted the same color.
     private func percentageText(_ pct: Double, color: Color,
                                 numberSize: CGFloat, unitSize: CGFloat) -> some View {
@@ -235,7 +302,7 @@ struct DetailView: View {
 
     /// True only during the very first data load (Stage 2 hasn't completed yet)
     private var isInitialLoad: Bool {
-        store.isLoading && store.ccEntries.isEmpty && store.cxEntries.isEmpty
+        store.isLoading && store.ccEntries.isEmpty && store.cxEntries.isEmpty && store.gmEntries.isEmpty
     }
 
     private var todaySection: some View {
@@ -398,6 +465,8 @@ struct DetailView: View {
             return modelColor(model.fullName)
         case .codex:
             return .orange
+        case .gemini:
+            return model.fullName.hasPrefix("claude-") ? modelColor(model.fullName) : .cyan
         }
     }
 

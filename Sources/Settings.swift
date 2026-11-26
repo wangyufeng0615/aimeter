@@ -6,9 +6,11 @@ struct SettingsView: View {
     @AppStorage("language") private var language: String = Language.auto.rawValue
     @AppStorage(AppPaths.Keys.claudeRoot) private var storedClaudeRoot = AppPaths.defaultClaudeRootPath
     @AppStorage(AppPaths.Keys.codexRoot) private var storedCodexRoot = AppPaths.defaultCodexRootPath
+    @AppStorage(AppPaths.Keys.geminiRoot) private var storedGeminiRoot = AppPaths.defaultGeminiRootPath
     @State private var hookInstalled = SetupHelper.isHookInstalled()
     @State private var claudeRootDraft = AppPaths.defaultClaudeRootPath
     @State private var codexRootDraft = AppPaths.defaultCodexRootPath
+    @State private var geminiRootDraft = AppPaths.defaultGeminiRootPath
     @State private var launchAtLoginError: String?
     @State private var suppressLaunchAtLoginChange = false
 
@@ -41,6 +43,13 @@ struct SettingsView: View {
                         privacyItem(AppPaths.displayPath(AppPaths.claudeSettingsFile)
                             + "  (" + (S.zh ? "仅用于安装 hook" : "to install the hook") + ")")
                         privacyItem("\(AppPaths.displayPath(AppPaths.codexSessionsDir))/**/rollout-*.jsonl")
+                        ForEach(AppPaths.antigravityConversationDirs, id: \.self) { dir in
+                            privacyItem("\(AppPaths.displayPath(dir))/*.db")
+                        }
+                        ForEach(AppPaths.antigravityDaemonDirs, id: \.self) { dir in
+                            privacyItem("\(AppPaths.displayPath(dir))/hub_*.json")
+                        }
+                        privacyItem("\(AppPaths.displayPath(AppPaths.geminiCLITmpDir))/*/chats/session-*.json")
                     }
 
                     VStack(alignment: .leading, spacing: 3) {
@@ -50,6 +59,9 @@ struct SettingsView: View {
                         privacyItem(S.zh
                             ? "raw.githubusercontent.com  (仅取 LiteLLM 定价，每次启动一次)"
                             : "raw.githubusercontent.com  (LiteLLM pricing, once per launch)")
+                        privacyItem(S.zh
+                            ? "127.0.0.1  (本机 Antigravity 语言服务，每分钟读一次额度)"
+                            : "127.0.0.1  (local Antigravity language server, quota once a minute)")
                     }
                 }
                 .padding(.vertical, 4)
@@ -96,9 +108,17 @@ struct SettingsView: View {
                         commit: saveCodexRoot
                     )
 
+                    PathRow(
+                        title: "Gemini / Antigravity",
+                        text: $geminiRootDraft,
+                        storedValue: storedGeminiRoot,
+                        defaultURL: AppPaths.defaultGeminiRoot,
+                        commit: saveGeminiRoot
+                    )
+
                     Text(S.zh
-                        ? "如果你的 Claude Code 或 Codex 没有安装在默认目录，可以在这里修改。"
-                        : "If your Claude Code or Codex isn't installed in the default directory, change it here.")
+                        ? "如果你的 Claude Code、Codex 或 Gemini / Antigravity 没有安装在默认目录，可以在这里修改。"
+                        : "If your Claude Code, Codex or Gemini / Antigravity isn't installed in the default directory, change it here.")
                         .font(.system(size: 10, design: .monospaced))
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -168,6 +188,21 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+
+                LabeledContent("Antigravity") {
+                    StatusBadge(status: UsageStore.antigravityInstalled ? .ok : .muted,
+                                text: UsageStore.antigravityInstalled
+                                    ? (S.zh ? "已检测到" : "Detected")
+                                    : (S.zh ? "未安装" : "Not installed"))
+                }
+                if UsageStore.antigravityInstalled {
+                    Text(S.zh
+                        ? "Token 来自本地会话数据库；额度在 Antigravity 运行时向本机语言服务查询，关闭后保留最近一次快照。"
+                        : "Tokens come from local conversation databases; quotas are read from the local language server while Antigravity runs, keeping the last snapshot after it quits.")
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
 
 #if canImport(Sparkle)
@@ -195,6 +230,7 @@ struct SettingsView: View {
         .onAppear {
             claudeRootDraft = storedClaudeRoot
             codexRootDraft = storedCodexRoot
+            geminiRootDraft = storedGeminiRoot
             hookInstalled = SetupHelper.isHookInstalled()
             syncLaunchAtLoginState()
         }
@@ -258,6 +294,12 @@ struct SettingsView: View {
         let normalized = AppPaths.normalizedRootInput(codexRootDraft, defaultURL: AppPaths.defaultCodexRoot)
         storedCodexRoot = normalized
         codexRootDraft = normalized
+    }
+
+    private func saveGeminiRoot() {
+        let normalized = AppPaths.normalizedRootInput(geminiRootDraft, defaultURL: AppPaths.defaultGeminiRoot)
+        storedGeminiRoot = normalized
+        geminiRootDraft = normalized
     }
 
     private func reveal(_ url: URL) {

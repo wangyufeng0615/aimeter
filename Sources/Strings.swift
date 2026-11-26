@@ -33,7 +33,7 @@ enum S {
     static var title: String        { "aimeter" }
     static var noData: String       { zh ? "等待会话数据…" : "Waiting for session data…" }
     static var localTokenScope: String {
-        zh ? "Token / 费用：仅 Claude Code 和 Codex" : "Tokens / cost: Claude Code and Codex only"
+        zh ? "Token / 费用：本机 CLI 与 Antigravity 记录" : "Tokens / cost: local CLI and Antigravity logs"
     }
     static func snapshotTime(_ date: Date) -> String {
         let time = date.formatted(date: .omitted, time: .shortened)
@@ -48,6 +48,11 @@ enum S {
         zh
             ? "在 Codex 里发一条消息即可显示 rate limit"
             : "Send a message in Codex to populate rate limits."
+    }
+    static var antigravityQuotaWaiting: String {
+        zh
+            ? "打开 Antigravity 后显示各模型额度"
+            : "Open Antigravity to populate model quotas."
     }
     static var claudeRateUnavailable: String {
         zh

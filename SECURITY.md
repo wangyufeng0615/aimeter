@@ -9,13 +9,16 @@ Use GitHub's [Privately Report a Vulnerability](https://github.com/wangyufeng061
 ## Scope
 
 aimeter runs entirely on your local machine. It reads from the default roots
-(`~/.claude`, `~/.codex`) or the custom roots configured in Settings:
+(`~/.claude`, `~/.codex`, `~/.gemini`) or the custom roots configured in Settings:
 
 - `<Claude root>/projects/**/*.jsonl` — Claude Code conversation logs
 - `<Claude root>/usage-rate.json` — rate-limit snapshot written by the statusline hook
 - `~/Library/Application Support/Claude/plan-usage-history.json` — Claude Desktop subscription-limit snapshots (percentages only)
 - `<Claude root>/settings.json` — inspected or edited only for hook setup/removal
 - `<Codex root>/sessions/**/rollout-*.jsonl` — Codex token-count and rate-limit events
+- `<Gemini root>/antigravity{,-cli}/conversations/*.db` — Antigravity IDE/CLI conversation databases, opened read-only (only per-generation token counts, model IDs and step timestamps are decoded)
+- `<Gemini root>/antigravity{,-cli}/daemon/hub_*.json` — loopback port, process ID and per-launch CSRF token of the running Antigravity language server (kept in memory only)
+- `<Gemini root>/tmp/*/chats/session-*.json` — Gemini CLI chat recordings (token counts only)
 
 It writes:
 
@@ -33,6 +36,12 @@ Automatic outbound requests are limited to:
   `https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json`.
 - Sparkle's appcast from
   `https://raw.githubusercontent.com/wangyufeng0615/aimeter/main/docs/appcast.xml`.
+
+Local-only requests: while Antigravity is running, aimeter calls its language
+server's `GetUserStatus` on `http://127.0.0.1:<port>` once a minute to read model
+quota fractions and reset times. aimeter itself only connects to 127.0.0.1;
+the language server answers with the quota state it already keeps for the
+Antigravity UI and may refresh it from Google's servers as it normally does.
 
 After the user approves an available update, Sparkle downloads the release zip
 referenced by the signed appcast from GitHub Releases. The app does not attach

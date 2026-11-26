@@ -1,5 +1,17 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- Antigravity (IDE and CLI) and Gemini CLI token usage in Today and Last 7 Days, decoded read-only from local conversation databases and chat recordings; Claude models used inside Antigravity are priced, Gemini codenames stay unpriced.
+- Antigravity quota card: used share and reset time per shared model pool, read once a minute from the local language server on 127.0.0.1.
+- Configurable Gemini / Antigravity root (default `~/.gemini`) in Settings → Paths.
+
+### Fixed
+- Count long Claude and Codex sessions without a whole-file size or line-count cutoff; bound memory per JSONL record instead.
+- Include archived Codex sessions and exact per-response usage records without double-counting delayed token-count snapshots or copied histories.
+- Keep completed Claude streaming usage when the same message/request is recorded more than once.
+
 ## [0.3.13] - 2026-09-30
 
 ### Fixed

@@ -1,6 +1,6 @@
 # aimeter
 
-macOS menu bar app，显示 Claude 共用订阅额度，以及 Claude Code 和 Codex CLI 的本地用量。
+macOS menu bar app，显示 Claude 共用订阅额度与 Antigravity 模型额度，以及 Claude Code、Codex CLI、Antigravity、Gemini CLI 的本地用量。
 
 ## 构建
 
@@ -22,14 +22,19 @@ swift test           # 跑单元测试（SPM，不走 Makefile，不链接 Spark
 
 SwiftUI + AppKit + Sparkle（自动更新）。app 本体用 `swiftc` 通过 Makefile 直接编译，包含 Sparkle 作为 embedded framework；`Package.swift` 只用于跑 SPM 测试（`swift test`），**不声明 Sparkle**，Sources/ 里 Sparkle 代码全部用 `#if canImport(Sparkle)` 隔离——测试不链接 Sparkle，避免 Xcode test bundle 因 Library Validation 加载不了 Sparkle-signed framework。
 
-- **数据层**：Claude 与 Codex 两个服务，各自读取本地来源
+- **数据层**：Claude、Codex、Google（Antigravity / Gemini CLI）三类来源，各自读取本地数据
   - Claude Code：`~/.claude/projects/**/*.jsonl`（JSONL 对话日志）+ `~/.claude/usage-rate.json`（statusline hook 写入的 rate limit）
   - Claude Desktop：`~/Library/Application Support/Claude/plan-usage-history.json`（5H/7D 共用订阅额度快照；不含 token/费用）
     - 此文件不一定随 Claude 用量页刷新；只信任 30 分钟内的样本，超过后显示不可用，避免重置后继续显示旧百分比
-  - Codex：`~/.codex/sessions/**/rollout-*.jsonl`（`token_count` 使用量增量 + `rate_limits` 百分比）
-- **路径层**：默认读 `~/.claude` / `~/.codex`，Settings 的 Paths 可改根目录；`AppPaths` 统一派生 projects、sessions、settings、rate cache 路径
+  - Codex：`~/.codex/{sessions,archived_sessions}/**/rollout-*.jsonl`（优先读取逐响应 `token_usage_record`；旧日志回退 `token_count`，额度仍读 `rate_limits`）
+  - Antigravity（IDE `~/.gemini/antigravity`、CLI `~/.gemini/antigravity-cli`）：`conversations/*.db`（SQLite，只读）。`gen_metadata.data` 是 protobuf：`1`=ChatModelMetadata（`4` ModelUsageStats：`2` 未缓存输入、`3` 输出含思考、`4` 缓存写、`5` 缓存读、`11` response_id；`19` 模型 ID；`20` 键值含 `last_step_index`），`2`=本次生成产出的步骤序号；时间取对应 `steps.metadata` 字段 `1`（created_at），失败请求没有产出步骤时取 `last_step_index` 那一步。字段号来自 `/Applications/Antigravity.app/Contents/Resources/bin/language_server` 内嵌的描述符（`exa.codeium_common_pb.ModelUsageStats`）。重试记录（字段 17）里失败的尝试 usage 为 0，只读字段 4
+    - 关闭后的会话库仍是 WAL 模式但没有 `-shm/-wal`，系统 SQLite（3.51）只读打不开，此时用 `immutable=1` 打开；有 `-shm` 或非空 `-wal` 时走普通只读
+    - Claude 模型 ID 带档位后缀（`claude-opus-5-5-medium`），去后缀后按 Claude 定价；Gemini 代号（`gemini-4-neon` 等）无公开价，费用记为未知
+  - Antigravity 额度：读 `daemon/hub_*.json`（pid、httpPort、csrfToken），pid 存活时 POST `http://127.0.0.1:<httpPort>/exa.language_server_pb.LanguageServerService/GetUserStatus`（头 `X-Codeium-Csrf-Token`，body `{}`）；`clientModelConfigs[].quotaInfo` 按（remainingFraction, resetTime）分组成池，proto3 JSON 省略 0 值，缺 `remainingFraction` 即已用尽。独立 60 秒定时器，不挂在 5 秒额度定时器上；token 不落盘
+  - Gemini CLI：`~/.gemini/tmp/*/chats/session-*.json`，`type == "gemini"` 的消息 `tokens.input` 含 cached、`output` 不含 thoughts，换算成未缓存输入 / 缓存读 / 输出含思考
+- **路径层**：默认读 `~/.claude` / `~/.codex` / `~/.gemini`，Settings 的 Paths 可改根目录；`AppPaths` 统一派生 projects、sessions、settings、rate cache 路径
 - **定价层**：从 LiteLLM GitHub 拉取最新定价，缓存到 `~/Library/Caches/com.aimeter.app/pricing.json`（24h TTL）；日志出现未定价的直接模型或支持的 tier 时提前刷新，所有请求至少间隔 15 分钟；新模型无需逐个加代码，离线用已有缓存和默认值，未知价格仍标记费用不完整
-- **刷新**：rate limit 每 5 秒读一次，JSONL/summary 每 15 秒刷新；Timer 都有 10% tolerance。Claude/Codex JSONL 都有 mtime+size+fileID 缓存、增量读取、64MB 单文件上限
+- **刷新**：rate limit 每 5 秒读一次，JSONL/summary 每 15 秒刷新；Timer 都有 10% tolerance。Claude/Codex JSONL 都有 mtime+size+fileID 缓存和流式增量读取；不因文件大小或行数丢弃长会话，按单条记录 8MB 限制缓冲
 - **自动更新**：Sparkle 内嵌在 `Contents/Frameworks/Sparkle.framework`，每 24h 拉一次 `https://raw.githubusercontent.com/wangyufeng0615/aimeter/main/docs/appcast.xml`；appcast 和 zip 都用 EdDSA 私钥签，app 用 `SUPublicEDKey` 验签
 
 定价来源、版本日期规则、缓存迁移与额度扫描边界见 [docs/pricing.md](docs/pricing.md)。
@@ -43,7 +48,11 @@ SwiftUI + AppKit + Sparkle（自动更新）。app 本体用 `swiftc` 通过 Mak
 | SetupHelper.swift | 首次启动检测 + 自动注入 statusline tee |
 | UsageStore.swift | ObservableObject，两阶段异步加载（Stage 1 rate limit → Stage 2 JSONL） |
 | RateReader.swift | 从 Claude Code statusline 与 Claude Desktop 取较新的有效额度快照；读取 Codex 近期 session JSONL 中最新有效的 rate_limits |
-| CodexReader.swift | 解析 Codex session JSONL 的 token_count 增量、模型和费用输入 |
+| CodexReader.swift | 解析 Codex 活跃及归档 JSONL 的逐响应用量、旧版增量、模型和费用输入 |
+| GeminiReader.swift | Antigravity 会话库与 Gemini CLI 记录 → `UsageEntry`，按库签名（db + wal 的大小和 mtime）缓存，按 response_id 去重 |
+| ProtobufWire.swift | 最小 protobuf wire 解码（varint/packed/嵌套/Timestamp） |
+| AntigravityQuotaReader.swift | 本机 Antigravity 语言服务额度查询与分池 |
+| JSONLStreamReader.swift | 共享有界流式 JSONL 读取，保留跨刷新半行及超大记录跳过状态 |
 | Pricing.swift | LiteLLM 定价获取/缓存/阶梯计费 |
 | Models.swift | UsageEntry, DailyUsage, ModelUsage |
 | DetailView.swift | 面板 UI：rate cards, 当日统计, model chart, weekly chart |
@@ -57,7 +66,8 @@ SwiftUI + AppKit + Sparkle（自动更新）。app 本体用 `swiftc` 通过 Mak
 - **Rate limit 百分比来自服务端**，不本地计算。Claude 取 Claude Code statusline hook（`tee` 写文件）或 Claude Desktop 本地快照中较新的有效值；Codex 从 session JSONL 的 `token_count` 事件读取。
 - **首次启动自动配置 statusline hook**：避免用户手动改 settings.json，弹一次性对话框获得授权。
 - **费用采用 ccusage 的 auto 模式**：JSONL 有 `costUSD` 字段就用，没有就按 LiteLLM 定价计算。
-- **Codex 费用按 session JSONL 的 token 拆分计算**：优先用 `last_token_usage`，缺失时用 `total_token_usage` 和上一条状态做差。
+- **Codex 费用按 session JSONL 的 token 拆分计算**：优先用 `token_usage_record.usage` 的逐响应增量，以 thread/response ID 去重，忽略后续重复的 `token_count`；旧日志用 `last_token_usage`，缺失时用 `total_token_usage` 做差。
+- **Claude 同消息 usage 更新**：同一 message/request ID 可能先写部分输出、再补完整 token，跨文件及增量刷新保留 token 更完整的记录。
 - **fileCache 线程安全**：主线程快照 → 后台用 inout 副本 → 主线程回写，`stage2InFlight` 防并发。
 - **JSONL 增量解析保留 parser state + trailingData**：从文件中间读取可能截断多字节字符，所以用容错 UTF-8 解码；Codex EOF 会 drain 完整 final line，避免无 trailing newline 时丢最后一条。
 - **Sparkle 采用 vendored xcframework**（`Vendor/Sparkle/`，gitignored）而非 SPM 依赖：避免 `swift test` 加载 Sparkle-signed framework 被 Library Validation 挡住，也让 CI/本地构建都不用等 git clone Sparkle 全量历史。
