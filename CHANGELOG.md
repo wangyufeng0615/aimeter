@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.3.14] - 2026-11-26
 
 ### Added
 - Antigravity (IDE and CLI) and Gemini CLI token usage in Today and Last 7 Days, decoded read-only from local conversation databases and chat recordings; Claude models used inside Antigravity are priced, Gemini codenames stay unpriced.
