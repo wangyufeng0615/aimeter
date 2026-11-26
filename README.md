@@ -17,8 +17,8 @@ Keep an eye on your Claude and Antigravity quotas and local [Claude Code](https:
 ## What it shows
 
 - **Claude quota at a glance**: 5-hour and weekly subscription limits, pulled from your latest local Claude Code or Claude Desktop snapshot (Desktop snapshots expire after 30 minutes).
-- **Antigravity quota**: remaining share and reset time per model pool (Gemini, Claude/GPT), read from the running Antigravity language server on 127.0.0.1; the last snapshot stays after it quits.
-- **Token usage & cost**: daily breakdown from local Claude Code, Codex CLI, Antigravity (IDE and CLI) and Gemini CLI logs (Claude Desktop chat is not included). Antigravity's Gemini codenames have no public price, so their cost shows as unknown.
+- **Antigravity Gemini quota**: used share and reset time, in the panel and the menu bar, read from the running Antigravity language server on 127.0.0.1; the last snapshot stays after it quits until its reset time passes.
+- **Token usage & cost**: daily breakdown from local Claude Code, Codex CLI, Antigravity (IDE and CLI, Gemini models only) and Gemini CLI logs (Claude Desktop chat is not included). Antigravity's Gemini codenames have no public price, so their cost shows as unknown.
 - **Zero log upload**: all parsing runs on your Mac; no prompts, sessions, or usage history ever leave the device.
 
 ## Install

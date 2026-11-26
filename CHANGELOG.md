@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.15] - 2026-11-26
+
+### Added
+- Gemini quota from Antigravity in the menu bar, next to the Claude and Codex entries.
+
+### Changed
+- Antigravity quota and token usage now cover Gemini models only; Claude and GPT-OSS used inside Antigravity are no longer shown.
+
 ## [0.3.14] - 2026-11-26
 
 ### Added

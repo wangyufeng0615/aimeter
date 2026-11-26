@@ -158,6 +158,9 @@ final class GeminiReader {
                 chat.string(19) ?? "",
                 displayName: chat.string(21) ?? ""
             )
+            // Third-party models (Claude, GPT-OSS) inside Antigravity are not
+            // tracked; only Gemini usage is shown for Google agents.
+            guard model.hasPrefix("gemini") else { return }
             let responseID = [usage.string(11), usage.string(7)]
                 .compactMap { $0 }
                 .first { !$0.isEmpty }
@@ -178,25 +181,14 @@ final class GeminiReader {
         return entries
     }
 
-    /// Antigravity appends the reasoning effort to third-party model IDs
-    /// (`claude-opus-5-5-medium`). Effort changes token counts, not the
-    /// per-token price, so the direct model ID is used for pricing.
+    /// Generations normally carry the response model ID; fall back to the
+    /// display name ("Gemini 4 Neon (High)" → "gemini-4-neon") when absent.
     static func normalizedAntigravityModel(_ raw: String, displayName: String) -> String {
-        var model = raw.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
-        if model.isEmpty {
-            model = displayName.lowercased()
-                .replacingOccurrences(of: #"\s*\(.*\)$"#, with: "", options: .regularExpression)
-                .replacingOccurrences(of: " ", with: "-")
-        }
-        if model.hasPrefix("claude-"),
-           let suffix = model.range(of: #"-(?:low|medium|high|xhigh|max)$"#, options: .regularExpression) {
-            model = String(model[..<suffix.lowerBound])
-        }
-        return model
-    }
-
-    static func displayName(_ model: String) -> String {
-        model.hasPrefix("claude-") ? Pricing.shortenModelName(model) : model
+        let model = raw.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        guard model.isEmpty else { return model }
+        return displayName.lowercased()
+            .replacingOccurrences(of: #"\s*\(.*\)$"#, with: "", options: .regularExpression)
+            .replacingOccurrences(of: " ", with: "-")
     }
 
     private static func query(_ db: OpaquePointer, _ sql: String,

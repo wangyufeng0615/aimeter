@@ -17,8 +17,8 @@
 ## 主要功能
 
 - **一眼看清 Claude 额度**：读取本机最新的 Claude Code 或 Claude 桌面版快照，展示 5 小时 / 每周限额（桌面版快照超过 30 分钟自动过期）。
-- **Antigravity 额度**：Antigravity 运行时向本机（127.0.0.1）语言服务读取各模型池（Gemini、Claude/GPT）的已用比例与重置时间，关闭后保留最近一次快照。
-- **Token 用量与费用**：解析本地 Claude Code、Codex CLI、Antigravity（IDE 与 CLI）和 Gemini CLI 记录，按模型统计用量和花费（不含 Claude 桌面版聊天）。Antigravity 的 Gemini 代号模型没有公开单价，费用显示为未知。
+- **Antigravity Gemini 额度**：Antigravity 运行时向本机（127.0.0.1）语言服务读取 Gemini 的已用比例与重置时间，面板和菜单栏都会显示；关闭后保留最近一次快照，过了重置时间不再显示。
+- **Token 用量与费用**：解析本地 Claude Code、Codex CLI、Antigravity（IDE 与 CLI，仅 Gemini 模型）和 Gemini CLI 记录，按模型统计用量和花费（不含 Claude 桌面版聊天）。Antigravity 的 Gemini 代号模型没有公开单价，费用显示为未知。
 - **纯本地、不上传**：日志解析全在本机完成，你的对话、记录和用量不会发往任何外部服务器。
 
 ## 安装

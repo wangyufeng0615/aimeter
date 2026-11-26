@@ -1,7 +1,8 @@
 import Foundation
 
-/// One shared Antigravity quota bucket. Antigravity reports the remaining
-/// fraction per model; models that share a bucket report identical values.
+/// One shared Antigravity Gemini quota bucket. Antigravity reports the
+/// remaining fraction per model; models that share a bucket report identical
+/// values.
 struct QuotaPool: Equatable, Identifiable {
     let name: String
     let usedPct: Double
@@ -14,7 +15,18 @@ struct AntigravityQuota: Equatable {
     let pools: [QuotaPool]
     let updatedAt: Date
 
-    var headlinePct: Double? { pools.first?.usedPct }
+    /// The language server refreshes once a minute while Antigravity runs.
+    /// After it quits the snapshot ages; a bucket whose reset time has passed
+    /// no longer has a knowable value, so it is dropped.
+    func visiblePools(at now: Date) -> [QuotaPool] {
+        guard now.timeIntervalSince(updatedAt) > 180 else { return pools }
+        return pools.filter { pool in pool.resetsAt.map { $0 > now } ?? false }
+    }
+
+    /// The most constrained Gemini bucket decides what can still run.
+    func headlinePct(at now: Date) -> Double? {
+        visiblePools(at: now).map(\.usedPct).max()
+    }
 }
 
 /// Reads model quotas from the running Antigravity language server. The IDE
@@ -49,15 +61,19 @@ enum AntigravityQuotaReader {
               let models = config["clientModelConfigs"] as? [[String: Any]] else { return nil }
 
         struct Bucket {
-            var names: [String] = []
+            let firstLabel: String
             let usedPct: Double
             let resetsAt: Date?
         }
         var order: [String] = []
         var buckets: [String: Bucket] = [:]
 
+        // Only Gemini models are tracked; third-party models in Antigravity
+        // (Claude, GPT-OSS) draw from a separate bucket. Orchestrator entries
+        // are routing aliases of Gemini models and share their bucket.
         for model in models {
-            guard let quota = model["quotaInfo"] as? [String: Any] else { continue }
+            guard let label = model["label"] as? String, label.hasPrefix("Gemini "),
+                  let quota = model["quotaInfo"] as? [String: Any] else { continue }
             // proto3 JSON omits zero values: an exhausted bucket has no
             // remainingFraction but still carries its reset time.
             let remaining = (quota["remainingFraction"] as? NSNumber)?.doubleValue ?? 0
@@ -66,32 +82,25 @@ enum AntigravityQuotaReader {
             if buckets[key] == nil {
                 order.append(key)
                 buckets[key] = Bucket(
+                    firstLabel: label,
                     usedPct: min(100, max(0, (1 - remaining) * 100)),
                     resetsAt: resetText.flatMap(parseDate)
                 )
             }
-            if let label = model["label"] as? String,
-               let family = family(of: label),
-               buckets[key]?.names.contains(family) == false {
-                buckets[key]?.names.append(family)
-            }
         }
 
+        // One bucket is simply "Gemini"; if Antigravity ever splits Gemini
+        // models into several buckets, each is named by its first model.
         let pools = order.compactMap { key -> QuotaPool? in
             guard let bucket = buckets[key] else { return nil }
-            let name = bucket.names.isEmpty ? "Antigravity" : bucket.names.joined(separator: "/")
+            let name = order.count == 1
+                ? "Gemini"
+                : bucket.firstLabel.replacingOccurrences(of: #"\s*\(.*\)$"#, with: "",
+                                                         options: .regularExpression)
             return QuotaPool(name: name, usedPct: bucket.usedPct, resetsAt: bucket.resetsAt)
         }
         guard !pools.isEmpty else { return nil }
         return AntigravityQuota(pools: pools, updatedAt: now)
-    }
-
-    /// "Gemini 4 Neon (High)" → "Gemini", "GPT-OSS 120B (Medium)" → "GPT".
-    /// Orchestrator entries are routing aliases, not a model family.
-    private static func family(of label: String) -> String? {
-        guard let first = label.split(separator: " ").first,
-              first != "Orchestrator" else { return nil }
-        return first.split(separator: "-").first.map(String.init)
     }
 
     private static func liveHubs(in dirs: [URL]) -> [Hub] {

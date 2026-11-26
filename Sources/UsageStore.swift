@@ -71,6 +71,9 @@ final class UsageStore: ObservableObject {
     @Published var codexRate: RateLimit?
     @Published var claudeRateStatus: ClaudeRateStatus = .waitingForSessionData
     @Published var antigravityQuota: AntigravityQuota?
+    /// Re-evaluated on every quota tick, including after Antigravity quits,
+    /// so the menu bar drops a value once its reset time has passed.
+    @Published private(set) var geminiQuotaPct: Double?
 
     // Local token data for detail views
     @Published var ccEntries: [UsageEntry] = []
@@ -245,13 +248,20 @@ final class UsageStore: ObservableObject {
     var codexMenuText: String {
         codexRate?.headlinePct.map { "Codex \(Int($0))%" } ?? "Codex —"
     }
+    var geminiMenuText: String {
+        geminiQuotaPct.map { "Gemini \(Int($0))%" } ?? "Gemini —"
+    }
     var showCodex: Bool { Self.codexInstalled && (codexRate != nil || !cxEntries.isEmpty) }
+    var showGemini: Bool { Self.antigravityInstalled && antigravityQuota != nil }
 
-    /// Single-provider fallback text (used when only one is installed)
-    var menuBarText: String {
-        if Self.claudeInstalled { return claudeMenuText }
-        if Self.codexInstalled  { return codexMenuText }
-        return "—"
+    /// Menu bar entries in display order. One entry renders as plain text;
+    /// two stack vertically; a third sits to the right of the stack.
+    var menuBarItems: [String] {
+        var items: [String] = []
+        if Self.claudeInstalled { items.append(claudeMenuText) }
+        if showCodex || (items.isEmpty && Self.codexInstalled) { items.append(codexMenuText) }
+        if showGemini { items.append(geminiMenuText) }
+        return items.isEmpty ? ["—"] : items
     }
 
     // MARK: - Claude detail data
@@ -431,8 +441,9 @@ final class UsageStore: ObservableObject {
     /// The language server only runs while Antigravity is open. Keep the last
     /// snapshot (shown with its time) instead of blanking the card on quit.
     private func applyQuota(_ quota: AntigravityQuota?) {
-        guard let quota, quota != antigravityQuota else { return }
-        antigravityQuota = quota
+        if let quota, quota != antigravityQuota { antigravityQuota = quota }
+        let pct = antigravityQuota?.headlinePct(at: now())
+        if geminiQuotaPct != pct { geminiQuotaPct = pct }
     }
 
     private func loadRateLimits() -> (claude: RateLimit?, claudeStatus: ClaudeRateStatus, codex: RateLimit?) {
@@ -458,6 +469,7 @@ final class UsageStore: ObservableObject {
         claudeRate = nil
         codexRate = nil
         antigravityQuota = nil
+        geminiQuotaPct = nil
         claudeRateStatus = .waitingForSessionData
         ccEntries = []
         cxEntries = []
@@ -649,7 +661,7 @@ final class UsageStore: ObservableObject {
         models += geminiModels.map {
             ModelBreakdown(
                 source: .gemini,
-                displayName: GeminiReader.displayName($0.key),
+                displayName: $0.key,
                 fullName: $0.key,
                 tokens: $0.value.tokens,
                 cost: $0.value.cost,

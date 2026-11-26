@@ -217,19 +217,18 @@ struct DetailView: View {
         }
     }
 
-    /// Antigravity reports quota per shared model bucket without a fixed
-    /// window length, so each bucket is labelled by its model families and
-    /// always shows its own reset time.
+    /// Antigravity reports Gemini quota per shared bucket without a fixed
+    /// window length, so each bucket always shows its own reset time.
     private func quotaCard(name: String, quota: AntigravityQuota?) -> some View {
-        let labelWidth: CGFloat = 64
+        let labelWidth: CGFloat = 44
         let valueWidth: CGFloat = 46
 
         return VStack(alignment: .leading, spacing: 0) {
             Text(name).font(Font2.header)
                 .padding(.bottom, 2)
 
-            if let quota, !visiblePools(quota).isEmpty {
-                ForEach(Array(visiblePools(quota).enumerated()), id: \.element.id) { index, pool in
+            if let pools = quota?.visiblePools(at: Date()), !pools.isEmpty, let quota {
+                ForEach(Array(pools.enumerated()), id: \.element.id) { index, pool in
                     let primary = index == 0
                     if !primary { Spacer().frame(height: 2) }
                     HStack(alignment: .center, spacing: 8) {
@@ -271,14 +270,6 @@ struct DetailView: View {
                     .padding(.top, 5)
             }
         }
-    }
-
-    /// After Antigravity quits the snapshot ages; a bucket whose reset time
-    /// has passed no longer has a knowable value, so it is not shown.
-    private func visiblePools(_ quota: AntigravityQuota) -> [QuotaPool] {
-        let now = Date()
-        guard now.timeIntervalSince(quota.updatedAt) > 180 else { return quota.pools }
-        return quota.pools.filter { pool in pool.resetsAt.map { $0 > now } ?? false }
     }
 
     /// Formatted percentage text: big number + small unit, both tinted the same color.
@@ -466,7 +457,7 @@ struct DetailView: View {
         case .codex:
             return .orange
         case .gemini:
-            return model.fullName.hasPrefix("claude-") ? modelColor(model.fullName) : .cyan
+            return .cyan
         }
     }
 

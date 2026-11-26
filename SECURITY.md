@@ -38,8 +38,8 @@ Automatic outbound requests are limited to:
   `https://raw.githubusercontent.com/wangyufeng0615/aimeter/main/docs/appcast.xml`.
 
 Local-only requests: while Antigravity is running, aimeter calls its language
-server's `GetUserStatus` on `http://127.0.0.1:<port>` once a minute to read model
-quota fractions and reset times. aimeter itself only connects to 127.0.0.1;
+server's `GetUserStatus` on `http://127.0.0.1:<port>` once a minute to read the
+Gemini quota fraction and reset time. aimeter itself only connects to 127.0.0.1;
 the language server answers with the quota state it already keeps for the
 Antigravity UI and may refresh it from Google's servers as it normally does.
 

@@ -22,14 +22,11 @@ struct AIMeterApp: App {
 #endif
         } label: {
             HStack(spacing: 3) {
-                if store.showCodex && UsageStore.claudeInstalled,
-                   let image = imageCache.image(
-                       top: store.claudeMenuText,
-                       bottom: store.codexMenuText
-                   ) {
+                let items = store.menuBarItems
+                if items.count > 1, let image = imageCache.image(items: items) {
                     Image(nsImage: image)
                 } else {
-                    Text(store.menuBarText)
+                    Text(items.first ?? "—")
                         .font(.system(size: 11, weight: .medium, design: .rounded))
                         .monospacedDigit()
                 }
@@ -53,27 +50,30 @@ struct AIMeterApp: App {
     }
 }
 
-/// Caches the rasterized menu-bar label so identical (top, bottom) inputs
-/// skip the ImageRenderer → SwiftUI layout → rasterize pipeline. The label
+/// Caches the rasterized menu-bar label so identical item lists skip the
+/// ImageRenderer → SwiftUI layout → rasterize pipeline. The label
 /// is re-evaluated every time @Published fields on the store change (every
 /// 2 s with the new rate timer), so caching matters.
 @MainActor
 final class StackedImageCache: ObservableObject {
-    private var cached: (top: String, bottom: String, image: NSImage)?
+    private var cached: (items: [String], image: NSImage)?
 
-    func image(top: String, bottom: String) -> NSImage? {
-        if let c = cached, c.top == top, c.bottom == bottom {
+    func image(items: [String]) -> NSImage? {
+        if let c = cached, c.items == items {
             return c.image
         }
-        guard let rendered = render(top: top, bottom: bottom) else { return nil }
-        cached = (top, bottom, rendered)
+        guard let rendered = render(items: items) else { return nil }
+        cached = (items, rendered)
         return rendered
     }
 
-    private func render(top: String, bottom: String) -> NSImage? {
-        let view = VStack(alignment: .trailing, spacing: 0) {
-            Text(top)
-            Text(bottom)
+    /// Two rows fit the menu bar height; a third entry sits beside them.
+    private func render(items: [String]) -> NSImage? {
+        let view = HStack(alignment: .center, spacing: 6) {
+            VStack(alignment: .trailing, spacing: 0) {
+                ForEach(Array(items.prefix(2).enumerated()), id: \.offset) { Text($0.element) }
+            }
+            ForEach(Array(items.dropFirst(2).enumerated()), id: \.offset) { Text($0.element) }
         }
         .font(.system(size: 10, weight: .medium, design: .rounded))
         .monospacedDigit()

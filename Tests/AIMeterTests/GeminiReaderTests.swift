@@ -49,9 +49,13 @@ final class GeminiReaderTests: XCTestCase {
                             input: 2369, output: 2163, cacheRead: 58806, responseID: "r1",
                             producedSteps: [378, 379], lastStep: 377)),
             // Failed request: no produced step, still billed.
-            (91, generation(model: "claude-opus-5-5-medium", display: "Claude Opus 5.5 (Medium)",
+            (91, generation(model: "gemini-3.8-flash", display: "Gemini 3.8 Flash (Low)",
                             input: 1000, output: 20, cacheRead: 0, responseID: "r2",
                             producedSteps: [], lastStep: 400)),
+            // Third-party models inside Antigravity are not tracked.
+            (93, generation(model: "claude-opus-5-5-medium", display: "Claude Opus 5.5 (Medium)",
+                            input: 500, output: 5, cacheRead: 0, responseID: "r3",
+                            producedSteps: [380], lastStep: 379)),
             // 429 without usage is ignored.
             (92, generation(model: "gemini-4-neon", display: "Gemini 4 Neon (High)",
                             input: 0, output: 0, cacheRead: 0, responseID: "",
@@ -77,10 +81,9 @@ final class GeminiReaderTests: XCTestCase {
         XCTAssertEqual(neon.totalTokens, 2369 + 2163 + 58806)
         XCTAssertFalse(neon.hasKnownCost)
 
-        let opus = try XCTUnwrap(entries.first { $0.model == "claude-opus-5-5" },
-                                 "effort suffix is stripped so Claude rates apply")
-        XCTAssertEqual(opus.timestamp, failedTime)
-        XCTAssertTrue(opus.hasKnownCost)
+        let flash = try XCTUnwrap(entries.first { $0.model == "gemini-3.8-flash" })
+        XCTAssertEqual(flash.timestamp, failedTime)
+        XCTAssertFalse(entries.contains { $0.model.hasPrefix("claude") })
     }
 
     func testAntigravityDeduplicatesAcrossDatabasesAndRereadsChangedFiles() throws {
@@ -164,12 +167,32 @@ final class GeminiReaderTests: XCTestCase {
         """
         let now = Date()
         let quota = try XCTUnwrap(AntigravityQuotaReader.parse(Data(json.utf8), now: now))
-        XCTAssertEqual(quota.pools.map(\.name), ["Gemini", "Claude/GPT"])
+        XCTAssertEqual(quota.pools.map(\.name), ["Gemini"], "third-party buckets are not tracked")
         XCTAssertEqual(quota.pools[0].usedPct, 75, accuracy: 0.001)
-        XCTAssertEqual(quota.pools[1].usedPct, 100, "omitted proto3 zero means exhausted")
-        XCTAssertEqual(quota.pools[1].resetsAt, ISO8601DateFormatter().date(from: "2026-11-28T07:20:09Z"))
-        XCTAssertEqual(quota.headlinePct, 75)
+        XCTAssertEqual(quota.pools[0].resetsAt, ISO8601DateFormatter().date(from: "2026-11-26T13:16:26Z"))
+        XCTAssertEqual(quota.headlinePct(at: now), 75)
         XCTAssertNil(AntigravityQuotaReader.parse(Data("{}".utf8), now: now))
+    }
+
+    func testSplitGeminiBucketsAreNamedAndExhaustedOnesCount() throws {
+        let json = """
+        {"userStatus":{"cascadeModelConfigData":{"clientModelConfigs":[
+          {"label":"Gemini 4 Neon (High)","quotaInfo":{"remainingFraction":0.5,"resetTime":"2026-11-26T13:00:00Z"}},
+          {"label":"Gemini 3.8 Flash (Low)","quotaInfo":{"resetTime":"2026-11-26T14:00:00Z"}}
+        ]}}}
+        """
+        let quota = try XCTUnwrap(AntigravityQuotaReader.parse(Data(json.utf8), now: Date()))
+        XCTAssertEqual(quota.pools.map(\.name), ["Gemini 4 Neon", "Gemini 3.8 Flash"])
+        XCTAssertEqual(quota.pools[1].usedPct, 100, "omitted proto3 zero means exhausted")
+    }
+
+    func testStaleSnapshotDropsBucketsPastTheirReset() {
+        let updated = Date(timeIntervalSince1970: 1_800_000_000)
+        let quota = AntigravityQuota(pools: [
+            QuotaPool(name: "Gemini", usedPct: 90, resetsAt: updated.addingTimeInterval(3600)),
+        ], updatedAt: updated)
+        XCTAssertEqual(quota.headlinePct(at: updated.addingTimeInterval(1800)), 90)
+        XCTAssertNil(quota.headlinePct(at: updated.addingTimeInterval(3601)))
     }
 
     func testQuotaReaderIgnoresHubsOfExitedProcesses() throws {
@@ -190,6 +213,15 @@ final class GeminiReaderTests: XCTestCase {
                                cacheReadTokens: 1000, speed: nil, inferenceGeo: nil, costUSD: nil)
         let quota = AntigravityQuota(pools: [QuotaPool(name: "Gemini", usedPct: 40, resetsAt: nil)],
                                      updatedAt: now)
+        let defaults = UserDefaults.standard
+        let previousRoot = defaults.object(forKey: AppPaths.Keys.geminiRoot)
+        let gemini = tempDir.appendingPathComponent("gemini/antigravity", isDirectory: true)
+        try? FileManager.default.createDirectory(at: gemini, withIntermediateDirectories: true)
+        defaults.set(gemini.deletingLastPathComponent().path, forKey: AppPaths.Keys.geminiRoot)
+        defer {
+            if let previousRoot { defaults.set(previousRoot, forKey: AppPaths.Keys.geminiRoot) }
+            else { defaults.removeObject(forKey: AppPaths.Keys.geminiRoot) }
+        }
         let store = UsageStore(
             projectsDir: tempDir, autoload: false, autoRefresh: false, now: { now },
             claudeRateSnapshotReader: { (nil, .waitingForSessionData) },
@@ -205,6 +237,8 @@ final class GeminiReaderTests: XCTestCase {
         XCTAssertTrue(store.usageSummary.today.hasUnknownCost)
         XCTAssertEqual(store.usageSummary.weekly.last?.tokens, 1120)
         XCTAssertEqual(store.antigravityQuota, quota)
+        XCTAssertEqual(store.geminiQuotaPct, 40)
+        XCTAssertEqual(store.menuBarItems.last, "Gemini 40%")
     }
 
     // MARK: - Fixtures
